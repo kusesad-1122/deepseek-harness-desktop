@@ -1,0 +1,44 @@
+diff --git a/lib/index.js b/lib/index.js
+index 9e3afa7128c63dc730a42a8cfa2008504f4fe740..ef4086cee759bbb38367a2c42a460ee9029d9251 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1754,6 +1754,25 @@ function createApiProxy(ctx, defaults) {
+ 		const selection = {
+ 			get current() {
+ 				if (picked !== void 0) return picked;
++				// Durable per-session pick: written by selectModel and by the
++				// agent loop whenever the routed model changes. A session that
++				// selected a model without sending keeps it across restarts.
++				const context = agent.session.requestContext();
++				if (context !== void 0) {
++					// Loop-written context events omit the effort; carry it over
++					// from the logged header only when it names the same route.
++					const header = agent.session.requestHeader()?.config;
++					const effort = header !== void 0
++						&& header.provider === context.provider
++						&& header.model === context.model
++						? header.reasoningEffort
++						: void 0;
++					return {
++						provider: context.provider,
++						model: context.model,
++						...effort === void 0 ? {} : { reasoningEffort: effort }
++					};
++				}
+ 				const logged = agent.session.requestHeader()?.config;
+ 				if (logged === void 0) return defaults.defaultModelSelection();
+ 				return {
+@@ -2699,6 +2718,13 @@ function createApiProxy(ctx, defaults) {
+ 							...resolved.reasoningEffort === void 0 ? {} : { reasoningEffort: resolved.reasoningEffort }
+ 						};
+ 						selectionFor(found.agent).current = selected;
++						// Durable per-session model memory: recorded in this
++						// session's own log so it survives restarts and never
++						// leaks into other conversations.
++						found.agent.session.append("request/context", {
++							provider: selected.provider,
++							model: selected.model
++						});
+ 						try {
+ 							await defaults.saveDefaultModelSelection?.(selected);
+ 						} catch (error) {
