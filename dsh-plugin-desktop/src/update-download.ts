@@ -47,6 +47,8 @@ export interface DownloadDesktopUpdateOptions {
   readonly signal?: AbortSignal
   /** Optional absolute HTTPS installer URL; defaults to the fixed platform endpoint. */
   readonly url?: string
+  /** Optional throttled download progress (bytes received, declared total or null). */
+  readonly onProgress?: (received: number, total: number | null) => void
 }
 
 /** Typed failure from installer request, validation, or cancellation. */
@@ -127,10 +129,11 @@ export async function downloadDesktopUpdate(options: DownloadDesktopUpdateOption
     throw new UpdateDownloadError('empty-body', 'The update download service returned an empty body.')
   }
   assertDeclaredSize(response)
+  const declaredTotal = declaredContentLength(response)
 
   let failure: unknown
   try {
-    await writeResponseBody(paths.temporary, response.body, options.signal)
+    await writeResponseBody(paths.temporary, response.body, options.signal, declaredTotal, options.onProgress)
     throwIfAborted(options.signal)
     await validateArtifact(paths.temporary, platform)
     throwIfAborted(options.signal)
@@ -253,14 +256,28 @@ function assertDeclaredSize(response: Response): void {
   }
 }
 
+/** Parsed declared byte count, or null when absent, malformed, or oversized. */
+function declaredContentLength(response: Response): number | null {
+  const declared = response.headers.get('content-length')
+  if (declared === null || !DECIMAL_BYTES.test(declared)) return null
+  const value = Number(declared)
+  if (!Number.isSafeInteger(value) || value > MAX_UPDATE_DOWNLOAD_BYTES) return null
+  return value
+}
+
+const PROGRESS_EMIT_INTERVAL_MS = 200
+
 async function writeResponseBody(
   filename: string,
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal | undefined,
+  declaredTotal: number | null,
+  onProgress: ((received: number, total: number | null) => void) | undefined,
 ): Promise<void> {
   const handle = await open(filename, 'wx', PRIVATE_FILE_MODE)
   const reader = body.getReader()
   let bytesWritten = 0
+  let lastEmitAt = 0
   try {
     while (true) {
       throwIfAborted(signal)
@@ -275,6 +292,11 @@ async function writeResponseBody(
       }
       await writeAll(handle, chunk.value)
       bytesWritten += chunk.value.byteLength
+      const now = Date.now()
+      if (onProgress !== undefined && now - lastEmitAt >= PROGRESS_EMIT_INTERVAL_MS) {
+        lastEmitAt = now
+        onProgress(bytesWritten, declaredTotal)
+      }
     }
     if (bytesWritten === 0) {
       throw new UpdateDownloadError('empty-body', 'The update download service returned an empty body.')
@@ -287,6 +309,7 @@ async function writeResponseBody(
     reader.releaseLock()
     await handle.close()
   }
+  onProgress?.(bytesWritten, declaredTotal)
 }
 
 async function writeAll(

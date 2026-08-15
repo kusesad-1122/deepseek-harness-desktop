@@ -29,6 +29,8 @@ import type {
   DesktopTrayItemGroup,
   DesktopTrayItemRegistration,
   DesktopUpdateAdapter,
+  DesktopUpdateOffer,
+  DesktopUpdateProgressHandler,
 } from './runtime.ts'
 import { prepareTrayIcon } from './tray-icons.ts'
 import { downloadDesktopUpdate } from './update-download.ts'
@@ -61,6 +63,9 @@ export function desktopProductVersion(moduleUrl: string = import.meta.url): stri
 }
 
 const PRODUCT_VERSION = desktopProductVersion()
+
+/** How long the Windows installer hand-off is observed before the app quits. */
+const UPDATE_HANDOFF_SETTLE_MS = 1500
 
 /** Native adapter used by the DSH Desktop launcher and owned by its Cordis shell plugin. */
 export class ElectronDesktopRuntime implements DesktopRuntime {
@@ -264,18 +269,29 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   }
 
   /** Ask before making the fixed download endpoint's counted request. */
-  private async confirmUpdateDownload(version: string): Promise<boolean> {
+  private async confirmUpdateDownload(version: string, offer?: DesktopUpdateOffer): Promise<boolean> {
+    const releaseUrl = offer?.releaseUrl ?? null
+    const buttons = releaseUrl === null ? ['Download', 'Later'] : ['Download', 'Release Notes', 'Later']
+    const defaultId = releaseUrl === null ? 1 : 2
     const result = await dialog.showMessageBox({
       type: 'info',
       title: 'DSH Desktop Update Available',
       message: `DSH Desktop ${version} is available.`,
-      detail: 'Download this update now?',
-      buttons: ['Download', 'Later'],
-      defaultId: 1,
-      cancelId: 1,
+      detail: offer?.releaseNotes ?? 'Download this update now?',
+      buttons,
+      defaultId,
+      cancelId: defaultId,
       noLink: true,
     })
-    return result.response === 0
+    if (result.response === 0) return true
+    if (releaseUrl !== null && result.response === 1) {
+      try {
+        await shell.openExternal(releaseUrl)
+      } catch {
+        // Opening the announcement page is best-effort; the user can still download next time.
+      }
+    }
+    return false
   }
 
   /** Report one user-triggered check without exposing network or response details. */
@@ -318,7 +334,12 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   }
 
   /** Download a confirmed installer and hand it to the native installation flow. */
-  private async downloadAndOpenUpdate(version: string, signal: AbortSignal, url?: string): Promise<void> {
+  private async downloadAndOpenUpdate(
+    version: string,
+    signal: AbortSignal,
+    url?: string,
+    onProgress?: DesktopUpdateProgressHandler,
+  ): Promise<void> {
     if (this.platform !== 'darwin' && this.platform !== 'win32') {
       throw new Error(`dsh-plugin-desktop: updates are unavailable on ${this.platform}`)
     }
@@ -329,6 +350,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
       request: (requestUrl, init) => net.fetch(requestUrl, init),
       signal,
       ...(url === undefined ? {} : { url }),
+      ...(onProgress === undefined ? {} : { onProgress }),
     })
     signal.throwIfAborted()
 
@@ -383,14 +405,38 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         reject(cause)
         return
       }
-      const fail = (cause: Error): void => { reject(cause) }
-      child.once('error', fail)
-      child.once('spawn', () => {
-        child.off('error', fail)
-        child.once('error', cause => {
-          process.stderr.write(`dsh-plugin-desktop: update installer failed after launch: ${cause.message}\n`)
-        })
+
+      // Verify the detached hand-off actually became viable before this app
+      // quits. A silent spawn failure (ENOENT/EACCES reported asynchronously)
+      // would otherwise look identical to success: the window closes and no
+      // installer ever appears. Success means no `error` and either the child
+      // survives the settle window or exits 0 inside it.
+      let settled = false
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
         child.unref()
+        resolve()
+      }, UPDATE_HANDOFF_SETTLE_MS)
+      const settle = (): void => { clearTimeout(timer) }
+      child.once('error', (cause: Error) => {
+        if (settled) return
+        settled = true
+        settle()
+        reject(new Error(`dsh-plugin-desktop: update installer failed to start: ${cause.message}`))
+      })
+      child.once('exit', (code, signal) => {
+        if (settled) return
+        settled = true
+        settle()
+        if (signal !== null || (typeof code === 'number' && code !== 0)) {
+          reject(new Error(
+            signal !== null
+              ? `dsh-plugin-desktop: update installer died from signal ${String(signal)} before the settle window elapsed`
+              : `dsh-plugin-desktop: update installer exited ${String(code)} before the settle window elapsed`,
+          ))
+          return
+        }
         resolve()
       })
     })

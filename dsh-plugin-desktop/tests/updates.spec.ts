@@ -7,6 +7,8 @@ import type {
   DesktopNotification,
   DesktopRuntime,
   DesktopTrayItem,
+  DesktopUpdateOffer,
+  DesktopUpdateProgressHandler,
 } from '../src/runtime.ts'
 import type { UpdateCheckResult } from '../src/update-checker.ts'
 import { apply, Config, inject, type Config as UpdateConfig } from '../src/updates.ts'
@@ -43,9 +45,14 @@ async function createHarness(options: {
   readonly canDownload?: boolean
   readonly config?: UpdateConfig
   readonly request?: DesktopRuntime['updates']['request']
-  readonly confirmDownload?: (version: string) => Promise<boolean>
+  readonly confirmDownload?: (version: string, offer?: DesktopUpdateOffer) => Promise<boolean>
   readonly showManualCheckResult?: (result: UpdateCheckResult | null) => Promise<void>
-  readonly downloadAndOpen?: (version: string, signal: AbortSignal) => Promise<void>
+  readonly downloadAndOpen?: (
+    version: string,
+    signal: AbortSignal,
+    url?: string,
+    onProgress?: DesktopUpdateProgressHandler,
+  ) => Promise<void>
   readonly notify?: (notification: DesktopNotification) => void
   readonly state?: string
 } = {}): Promise<Harness> {
@@ -160,7 +167,9 @@ describe('desktop update Host plugin', () => {
     const harness = await createHarness({ request })
 
     await vi.advanceTimersByTimeAsync(testConfig.initialDelayMs)
-    await vi.waitFor(() => { expect(harness.confirmDownload).toHaveBeenCalledWith('2.1.0') })
+    await vi.waitFor(() => {
+      expect(harness.confirmDownload).toHaveBeenCalledWith('2.1.0', expect.objectContaining({ releaseUrl: null }))
+    })
     expect(harness.downloadAndOpen).not.toHaveBeenCalled()
     expect(harness.tray.label()).toBe('DSH Desktop 2.1.0 Available')
     await vi.waitFor(async () => {
@@ -237,7 +246,7 @@ describe('desktop update Host plugin', () => {
     await harness.tray.invoke()
 
     expect(request).toHaveBeenCalledTimes(2)
-    expect(harness.confirmDownload).toHaveBeenCalledWith('2.1.0')
+    expect(harness.confirmDownload).toHaveBeenCalledWith('2.1.0', expect.objectContaining({ releaseUrl: null }))
     expect(harness.downloadAndOpen).not.toHaveBeenCalled()
     expect(harness.showManualCheckResult).not.toHaveBeenCalled()
     expect(harness.tray.label()).toBe('DSH Desktop 2.2.0 Available')
@@ -301,7 +310,9 @@ describe('desktop update Host plugin', () => {
 
     expect(harness.tray.label()).toBe('Check for Updates…')
     await vi.advanceTimersByTimeAsync(testConfig.initialDelayMs)
-    await vi.waitFor(() => { expect(harness.confirmDownload).toHaveBeenCalledWith('2.1.0') })
+    await vi.waitFor(() => {
+      expect(harness.confirmDownload).toHaveBeenCalledWith('2.1.0', expect.objectContaining({ releaseUrl: null }))
+    })
     await vi.waitFor(async () => {
       expect(JSON.parse(await readFile(harness.statePath, 'utf8'))).toEqual({
         version: 2,
@@ -331,7 +342,7 @@ describe('desktop update Host plugin', () => {
     expect(harness.tray.label()).toBe('Check for Updates…')
   })
 
-  it('shares one pending download and silently restores availability after failure', async () => {
+  it('notifies once and restores availability after a download failure', async () => {
     let rejectDownload!: (cause: Error) => void
     const download = new Promise<void>((_resolve, reject) => { rejectDownload = reject })
     const harness = await createHarness({
@@ -349,9 +360,32 @@ describe('desktop update Host plugin', () => {
     await Promise.all([first, second])
 
     expect(harness.downloadAndOpen).toHaveBeenCalledOnce()
-    expect(harness.notifications).toEqual([])
+    expect(harness.notifications).toEqual([{ title: 'DSH Desktop Update Failed', body: 'offline' }])
     expect(harness.warnings).toEqual([])
     expect(harness.tray.label()).toBe('DSH Desktop 2.1.0 Available')
+  })
+
+  it('streams download progress into the tray label', async () => {
+    let progress!: DesktopUpdateProgressHandler
+    let finishDownload!: () => void
+    const harness = await createHarness({
+      packaged: false,
+      request: async () => versionResponse('2.1.0'),
+      confirmDownload: async () => true,
+      downloadAndOpen: async (_version, _signal, _url, onProgress) => new Promise<void>(resolve => {
+        progress = onProgress!
+        finishDownload = resolve
+      }),
+    })
+
+    const pending = harness.tray.invoke()
+    await vi.waitFor(() => { expect(harness.downloadAndOpen).toHaveBeenCalledOnce() })
+    progress(50 * 1024 * 1024, 148 * 1024 * 1024)
+    expect(harness.tray.label()).toBe('Downloading DSH Desktop 2.1.0… 34%')
+    finishDownload()
+    await pending
+    expect(harness.tray.label()).toBe('DSH Desktop 2.1.0 Available')
+    expect(harness.notifications).toEqual([])
   })
 
   it('aborts checks and downloads and removes the tray item on effect disposal', async () => {
@@ -442,6 +476,10 @@ describe('desktop update Host plugin', () => {
   it('routes the github source to the configured release repository and downloads its asset URL', async () => {
     const request = vi.fn(async (_url: string, _init: RequestInit) => Response.json({
       tag_name: 'v2.1.0',
+      html_url: 'https://github.com/kusesad-1122/deepseek-harness-desktop/releases/tag/v2.1.0',
+      name: 'v2.1.0 更新公告',
+      body: '# 更新公告\n- 新功能',
+      published_at: '2026-08-16T00:00:00Z',
       assets: [{
         name: 'DSH-Desktop-2.1.0-x64-Setup.exe',
         browser_download_url: 'https://example.test/DSH-Desktop-2.1.0-x64-Setup.exe',
@@ -465,10 +503,17 @@ describe('desktop update Host plugin', () => {
     expect(request.mock.calls[0]?.[0]).toBe(
       'https://api.github.com/repos/kusesad-1122/deepseek-harness-desktop/releases/latest',
     )
+    expect(harness.confirmDownload).toHaveBeenCalledWith('2.1.0', {
+      releaseUrl: 'https://github.com/kusesad-1122/deepseek-harness-desktop/releases/tag/v2.1.0',
+      releaseName: 'v2.1.0 更新公告',
+      releaseNotes: '# 更新公告\n- 新功能',
+      publishedAt: '2026-08-16T00:00:00Z',
+    })
     expect(harness.downloadAndOpen).toHaveBeenCalledWith(
       '2.1.0',
       expect.any(AbortSignal),
       'https://example.test/DSH-Desktop-2.1.0-x64-Setup.exe',
+      expect.any(Function),
     )
     expect(harness.showManualCheckResult).not.toHaveBeenCalled()
     expect(harness.notifications).toEqual([])

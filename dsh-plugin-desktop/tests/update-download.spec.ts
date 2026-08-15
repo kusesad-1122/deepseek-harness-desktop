@@ -93,6 +93,25 @@ describe('desktop update installer download', () => {
     await expectNoPartialFiles(userDataPath, '2.1.0')
   })
 
+  it('reports throttled download progress with the declared total and a final emission', async () => {
+    const userDataPath = await temporaryUserData()
+    const artifact = dmgArtifact()
+    const progress: Array<{ received: number; total: number | null }> = []
+    const result = await downloadDesktopUpdate({
+      platform: 'darwin',
+      version: '2.1.0',
+      userDataPath,
+      request: async () => chunkedResponse([artifact.subarray(0, 333), artifact.subarray(333)], {
+        'content-length': String(artifact.byteLength),
+      }),
+      onProgress: (received, total) => { progress.push({ received, total }) },
+    })
+
+    expect(result).toContain('DSH-Desktop-2.1.0-mac.dmg')
+    expect(progress[0]).toEqual({ received: 333, total: 1024 })
+    expect(progress.at(-1)).toEqual({ received: 1024, total: 1024 })
+  })
+
   it('accepts a Windows executable only when it has both MZ and PE signatures', async () => {
     const userDataPath = await temporaryUserData()
     const artifact = windowsArtifact()
