@@ -33,11 +33,15 @@ flowchart LR
 ## Host、Client 和 native runtime
 
 - **Upstream Host**：agent、model、tool、session、settings、webServer 和 subprocess 等官方能力。
-- **Desktop Host**：窗口、托盘、profile、终端、更新，以及对第三方开放的两个 service。
+- **Desktop Host**：窗口、托盘、profile、终端、更新、跨会话记忆，以及对第三方开放的两个 service。
 - **Web Client**：官方 Web UI 和第三方浏览器界面。它通过 loopback carrier 工作，不直接调用 Electron。
 - **Native runtime**：Electron BrowserWindow、系统托盘、文件/网络/安装器适配。`desktopRuntime` 只供 Desktop 自有 row 使用。
 
 兼容模式的 Client face 校验环境后直接返回，不注册 Desktop layout、root、sidebar 或 conversation override。高级模式才安装 Desktop-owned layout、frame 和原生材质，同时尊重上游和第三方 slot 组合。
+
+### 跨会话记忆
+
+`desktop-memory` 是 Desktop-owned Host row。它在当前 profile 目录的 `memory/` 下维护有界的 `MEMORY.md`（agent 自己的笔记）与 `USER.md`（用户画像），默认上限分别为 2200 / 1375 字符。世代启动时读取并**冻结**系统提示词快照；`memory` 工具在会话中立即原子落盘，但快照不会重建，因此当前世代的系统提示词字节稳定，改动在下次 profile 切换或应用重启后进入上下文。写入失败一律返回 `success: false` 与可恢复的现状信息，不抛工具错误。
 
 ## Profile 与服务边界
 

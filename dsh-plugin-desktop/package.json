@@ -52,6 +52,10 @@
       "types": "./lib/types/updates.d.ts",
       "default": "./lib/updates.js"
     },
+    "./memory": {
+      "types": "./lib/types/memory.d.ts",
+      "default": "./lib/memory.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

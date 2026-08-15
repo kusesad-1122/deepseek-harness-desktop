@@ -145,6 +145,22 @@ The Desktop-owned `desktop-updates` row polls for updates (first check 60 second
 
 This fork's `cordis.patch.yml` pins `source: github` with the fork coordinates, so packaged builds check and download from the fork's own GitHub Releases only.
 
+### `desktop-memory` plugin configuration
+
+The Desktop-owned `desktop-memory` row owns bounded cross-session memory. It reads `MEMORY.md` and `USER.md` from the active profile's `memory/` directory once per generation, freezes that snapshot into the `memory` system-prompt section (order `300`), and registers the model-facing `memory` tool:
+
+```yaml
+- id: desktop-memory
+  name: dsh-plugin-desktop/memory
+  config:
+    memoryEnabled: true      # inject and manage MEMORY.md
+    userProfileEnabled: true # inject and manage USER.md
+    memoryCharLimit: 2200    # hard char budget for MEMORY.md
+    userCharLimit: 1375      # hard char budget for USER.md
+```
+
+Tool writes are durable immediately but only enter the system prompt on the next generation. Business failures (over budget, ambiguous substring match, external file drift) are returned as structured `success: false` tool values with `currentEntries`/`usage`, never as thrown tool errors.
+
 ## Internal and launcher-private capabilities
 
 | Name | Boundary | Plugin-author status |
