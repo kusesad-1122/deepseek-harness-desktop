@@ -13,6 +13,7 @@
 | 插件作者 | [插件开发](plugin-development.md) | 普通 DSH 插件、Desktop 服务、兼容模式和生命周期 |
 | 架构/维护者 | [架构说明](architecture.md) | Electron、Host、loopback Web、profile 和打包之间的关系 |
 | 维护者 | [上游跟进策略](upstream-policy.md) | 两个上游的 pin、更新渠道隔离，以及按需手动跟进流程 |
+| 维护者 | [发布公告模板](release-notes/_TEMPLATE.md) | 每个 tag 必须准备的用户向更新公告与格式要求 |
 | Desktop service 参考 | [`dsh-plugin-desktop/docs/plugin-services.md`](../dsh-plugin-desktop/docs/plugin-services.md) | `desktopProfiles`、`desktopPnpm` 的稳定 contract 和 TypeScript 示例 |
 | 包级参考 | [`dsh-plugin-desktop/README.md`](../dsh-plugin-desktop/README.md) | 完整的构建、运行、发布和已知限制 |
 
