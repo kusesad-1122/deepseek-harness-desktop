@@ -117,7 +117,10 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     const checkCurrentVersion = (signal: AbortSignal): Promise<UpdateCheckResult | null> => {
-      if (config.source === 'github' && config.githubOwner.length > 0 && config.githubRepo.length > 0) {
+      if (config.source === 'github') {
+        // An incomplete github source means there is no release channel, not
+        // that the upstream product service should be contacted instead.
+        if (config.githubOwner.length === 0 || config.githubRepo.length === 0) return Promise.resolve(null)
         return checkForGithubReleaseUpdate({
           owner: config.githubOwner,
           repo: config.githubRepo,

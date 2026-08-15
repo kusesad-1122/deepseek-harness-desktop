@@ -1,11 +1,11 @@
 {
   "name": "dsh-plugin-desktop",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "DSH Desktop: an Electron shell composed as a DeepSeek Harness Cordis plugin",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anywhere-labs/deepseek-harness-desktop.git",
+    "url": "git+https://github.com/kusesad-1122/deepseek-harness-desktop.git",
     "directory": "dsh-plugin-desktop"
   },
   "type": "module",

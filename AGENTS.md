@@ -9,4 +9,5 @@ This repository owns the desktop product around an unmodified DeepSeek Harness c
 - Compatibility mode must run the upstream default client without overrides. Advanced presentation belongs to desktop-owned client plugins and may replace documented slots or services through profile composition.
 - Keep graphical application launch explicit. Builds, typechecks, unit tests, and Loader smokes must remain headless-safe.
 - Commit before major changes of direction and keep the submodule pin update separate from desktop behavior changes.
+- Packaged update checks target this fork's GitHub Releases only; the upstream product service must never be contacted implicitly. Manual upstream merges follow [docs/upstream-policy.md](docs/upstream-policy.md).
 - Keep the repository topology and package-manager split consistent with the [owning Agent Note](.agents/notes/implemented/process/2026-08-15-pinned-upstream-and-isolated-yarn-workspace.md).

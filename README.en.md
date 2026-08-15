@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/anywhere-labs/deepseek-harness-desktop"><img src="https://img.shields.io/github/stars/anywhere-labs/deepseek-harness-desktop?style=flat&amp;label=%E2%98%85&amp;color=08C" alt="GitHub stars"></a>
+  <a href="https://github.com/kusesad-1122/deepseek-harness-desktop"><img src="https://img.shields.io/github/stars/kusesad-1122/deepseek-harness-desktop?style=flat&amp;label=%E2%98%85&amp;color=08C" alt="GitHub stars"></a>
   <img src="https://img.shields.io/badge/Desktop-App-47848F?style=flat" alt="Desktop application">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat" alt="MIT License"></a>
   <a href="https://discord.gg/TJeGqKRNM"><img src="https://img.shields.io/badge/Discord-5865F2?style=flat&amp;logo=discord&amp;logoColor=white" alt="Join Discord"></a>
@@ -84,6 +84,8 @@ The official project provides the core agent capabilities, plugin system, and We
 - An interface designed for desktop use
 
 If you prefer to run Harness from the command line or contribute to its core functionality, refer to the official repository first.
+
+Both upstreams — the Desktop code layer (anywhere-labs) and the Harness core layer (deepseek-ai) — stay pinned and are followed only when the maintainer explicitly chooses to. In-app updates check this fork's GitHub Releases only. See the [upstream policy](docs/upstream-policy.en.md) for the full workflow.
 
 ## Special Thanks
 
