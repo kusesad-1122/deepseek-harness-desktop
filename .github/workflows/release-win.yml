@@ -39,8 +39,13 @@ jobs:
             $version = (Get-Content dsh-plugin-desktop/package.json -Raw | ConvertFrom-Json).version
             $tag = "v$version"
           }
+          $notesPath = "docs/release-notes/$tag.md"
+          if (-not (Test-Path $notesPath)) {
+            throw "Release announcement missing: $notesPath is required before publishing. Copy docs/release-notes/_TEMPLATE.md and fill in the user-facing changes."
+          }
           if (gh release view $tag --json id 2>$null) {
+            gh release edit $tag --title $tag --notes-file $notesPath
             gh release upload $tag $exe.FullName --clobber
           } else {
-            gh release create $tag $exe.FullName --generate-notes --title $tag
+            gh release create $tag $exe.FullName --title $tag --notes-file $notesPath
           }
