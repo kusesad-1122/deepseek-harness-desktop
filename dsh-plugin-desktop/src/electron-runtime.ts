@@ -73,7 +73,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     request: (url, init) => net.fetch(url, init),
     confirmDownload: version => this.confirmUpdateDownload(version),
     showManualCheckResult: result => this.showManualUpdateCheckResult(result),
-    downloadAndOpen: (version, signal) => this.downloadAndOpenUpdate(version, signal),
+    downloadAndOpen: (version, signal, url) => this.downloadAndOpenUpdate(version, signal, url),
     notify: notification => { this.showNotification(notification) },
   }
 
@@ -318,7 +318,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   }
 
   /** Download a confirmed installer and hand it to the native installation flow. */
-  private async downloadAndOpenUpdate(version: string, signal: AbortSignal): Promise<void> {
+  private async downloadAndOpenUpdate(version: string, signal: AbortSignal, url?: string): Promise<void> {
     if (this.platform !== 'darwin' && this.platform !== 'win32') {
       throw new Error(`dsh-plugin-desktop: updates are unavailable on ${this.platform}`)
     }
@@ -326,8 +326,9 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
       platform: this.platform,
       version,
       userDataPath: app.getPath('userData'),
-      request: (url, init) => net.fetch(url, init),
+      request: (requestUrl, init) => net.fetch(requestUrl, init),
       signal,
+      ...(url === undefined ? {} : { url }),
     })
     signal.throwIfAborted()
 

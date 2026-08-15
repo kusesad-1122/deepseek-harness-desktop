@@ -271,4 +271,48 @@ describe('desktop update installer download', () => {
     }), 'invalid-options')
     expect(requested).toBe(false)
   })
+
+  it('downloads one installer from an explicit HTTPS asset URL', async () => {
+    const userDataPath = await temporaryUserData()
+    const artifact = windowsArtifact()
+    const calls: Array<{ url: string, init: RequestInit }> = []
+    const result = await downloadDesktopUpdate({
+      platform: 'win32',
+      version: '2.10.0',
+      userDataPath,
+      url: 'https://example.test/DSH-Desktop-2.10.0-x64-Setup.exe',
+      request: async (url, init) => {
+        calls.push({ url, init })
+        return chunkedResponse([artifact])
+      },
+    })
+
+    expect(result).toBe(join(userDataPath, 'updates', '2.10.0', 'DSH-Desktop-2.10.0-windows.exe'))
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.url).toBe('https://example.test/DSH-Desktop-2.10.0-x64-Setup.exe')
+    expect(calls[0]?.init).toMatchObject({ method: 'GET', cache: 'no-store', redirect: 'follow' })
+    await expectNoPartialFiles(userDataPath, '2.10.0')
+  })
+
+  it.each([
+    ['an insecure protocol', 'http://example.test/setup.exe'],
+    ['an ftp protocol', 'ftp://example.test/setup.exe'],
+    ['a relative path', 'setup.exe'],
+    ['embedded credentials', 'https://user:pass@example.test/setup.exe'],
+    ['an empty URL', ''],
+  ] as const)('rejects %s before requesting', async (_label, url) => {
+    const userDataPath = await temporaryUserData()
+    let requested = false
+    await expectFailure(downloadDesktopUpdate({
+      platform: 'win32',
+      version: '2.11.0',
+      userDataPath,
+      url,
+      request: async () => {
+        requested = true
+        return chunkedResponse([windowsArtifact()])
+      },
+    }), 'invalid-options')
+    expect(requested).toBe(false)
+  })
 })

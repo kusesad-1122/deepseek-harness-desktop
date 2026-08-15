@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   DESKTOP_VERSION_ENDPOINT,
+  MAX_RELEASE_RESPONSE_BYTES,
   MAX_VERSION_RESPONSE_BYTES,
+  checkForGithubReleaseUpdate,
   checkForStableUpdate,
   compareSemVerVersions,
+  githubReleaseEndpoint,
   parseSemVer,
   type UpdateRequest,
 } from '../src/update-checker.ts'
@@ -168,6 +171,160 @@ describe('public Desktop version check', () => {
     const request = vi.fn(async () => versionResponse('2.1.0'))
 
     await expect(checkForStableUpdate({ currentVersion, request })).resolves.toBeNull()
+    expect(request).not.toHaveBeenCalled()
+  })
+})
+
+describe('GitHub Releases version check', () => {
+  function releaseResponse(tagName: unknown, assets: unknown = []): Response {
+    return Response.json({ tag_name: tagName, assets })
+  }
+
+  it('follows the latest-release redirect, accepts a v-prefixed tag, and selects the Windows asset', async () => {
+    const controller = new AbortController()
+    const calls: Array<{ url: string, init: RequestInit }> = []
+    const request: UpdateRequest = async (url, init) => {
+      calls.push({ url, init })
+      return releaseResponse('v2.10.0', [{
+        name: 'DSH-Desktop-2.10.0-x64-Setup.exe',
+        browser_download_url: 'https://example.test/DSH-Desktop-2.10.0-x64-Setup.exe',
+      }])
+    }
+
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.9.9',
+      signal: controller.signal,
+      request,
+    })).resolves.toEqual({
+      status: 'update-available',
+      currentVersion: '2.9.9',
+      latestVersion: '2.10.0',
+      assetUrl: 'https://example.test/DSH-Desktop-2.10.0-x64-Setup.exe',
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.url).toBe(githubReleaseEndpoint('kusesad-1122', 'deepseek-harness-desktop'))
+    expect(calls[0]?.init).toMatchObject({
+      method: 'GET',
+      cache: 'no-store',
+      redirect: 'follow',
+      signal: controller.signal,
+    })
+    const headers = new Headers(calls[0]?.init.headers)
+    expect(headers.get('accept')).toBe('application/vnd.github+json')
+    expect(headers.has('x-github-api-version')).toBe(false)
+  })
+
+  it('prefers the exe asset and falls back to the dmg asset', async () => {
+    const assets = [
+      { name: 'notes.txt', browser_download_url: 'https://example.test/notes.txt' },
+      { name: 'DSH-Desktop-2.10.0.dmg', browser_download_url: 'https://example.test/setup.dmg' },
+      { name: 'DSH-Desktop-2.10.0-x64-Setup.exe', browser_download_url: 'https://example.test/setup.exe' },
+    ]
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.0.0',
+      request: async () => releaseResponse('v2.10.0', assets),
+    })).resolves.toMatchObject({ status: 'update-available', assetUrl: 'https://example.test/setup.exe' })
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.0.0',
+      request: async () => releaseResponse('v2.10.0', assets.slice(0, 2)),
+    })).resolves.toMatchObject({ status: 'update-available', assetUrl: 'https://example.test/setup.dmg' })
+  })
+
+  it('reports up to date for an equal or older release tag and no asset URL without assets', async () => {
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.10.0',
+      request: async () => releaseResponse('v2.10.0'),
+    })).resolves.toEqual({
+      status: 'up-to-date',
+      currentVersion: '2.10.0',
+      latestVersion: '2.10.0',
+      assetUrl: null,
+    })
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.11.0',
+      request: async () => releaseResponse('2.10.0'),
+    })).resolves.toMatchObject({ status: 'up-to-date' })
+  })
+
+  it.each([
+    ['a prerelease tag', releaseResponse('v2.1.0-rc.1')],
+    ['an invalid tag', releaseResponse('not-a-version')],
+    ['a missing tag', Response.json({ assets: [] })],
+    ['a non-object body', Response.json(['2.1.0'])],
+  ])('silently ignores a release body with %s', async (_label, response) => {
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.0.0',
+      request: async () => response,
+    })).resolves.toBeNull()
+  })
+
+  it('silently ignores malformed JSON and non-200 statuses', async () => {
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.0.0',
+      request: async () => new Response('{'),
+    })).resolves.toBeNull()
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.0.0',
+      request: async () => new Response(null, { status: 403 }),
+    })).resolves.toBeNull()
+  })
+
+  it('silently ignores declared and streamed oversized release bodies', async () => {
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.0.0',
+      request: async () => new Response('{}', {
+        headers: { 'content-length': String(MAX_RELEASE_RESPONSE_BYTES + 1) },
+      }),
+    })).resolves.toBeNull()
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.0.0',
+      request: async () => new Response('x'.repeat(MAX_RELEASE_RESPONSE_BYTES + 1)),
+    })).resolves.toBeNull()
+  })
+
+  it.each([
+    ['owner', 'bad owner', 'deepseek-harness-desktop'],
+    ['repo', 'kusesad-1122', '../escape'],
+  ])('rejects an invalid %s name before requesting', async (_label, owner, repo) => {
+    const request = vi.fn(async () => releaseResponse('v2.1.0'))
+    await expect(checkForGithubReleaseUpdate({
+      owner,
+      repo,
+      currentVersion: '2.0.0',
+      request,
+    })).resolves.toBeNull()
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('skips invalid installed version before requesting', async () => {
+    const request = vi.fn(async () => releaseResponse('v2.1.0'))
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: 'v2.0.0',
+      request,
+    })).resolves.toBeNull()
     expect(request).not.toHaveBeenCalled()
   })
 })

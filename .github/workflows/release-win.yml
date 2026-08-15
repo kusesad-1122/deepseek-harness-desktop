@@ -1,0 +1,46 @@
+name: Release Windows Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  release-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.23.2
+      - run: corepack enable
+      - run: yarn install --immutable
+      - name: Build unsigned x64 NSIS installer
+        run: yarn dist:win
+      - name: Publish installer to GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $exe = Get-ChildItem -Path dsh-plugin-desktop/dist -Filter 'DSH-Desktop-*-Setup.exe' |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -eq $exe) { throw 'Windows installer was not produced.' }
+          $tag = $env:GITHUB_REF_NAME
+          if ($env:GITHUB_EVENT_NAME -ne 'push') {
+            $version = (Get-Content dsh-plugin-desktop/package.json -Raw | ConvertFrom-Json).version
+            $tag = "v$version"
+          }
+          if (gh release view $tag --json id 2>$null) {
+            gh release upload $tag $exe.FullName --clobber
+          } else {
+            gh release create $tag $exe.FullName --generate-notes --title $tag
+          }

@@ -123,6 +123,28 @@ The service starts at most one package operation per generation. A second call w
 
 Invalid argv, an invalid `invokingDir`, a closed or busy generation, and a signal that was already aborted all throw synchronously before a handle is returned. After a handle exists, cancellation and generation teardown target the complete subprocess tree. `done` does not settle merely because the direct wrapper exits; the operation gate remains held until descendants are gone. An asynchronous spawn-level failure rejects `done`, while a normal command failure resolves it with a nonzero exit code. On Windows the provider launches exact packaged entries with argv and delegates tree ownership to the subprocess service, so plugin authors do not need to discover `.cmd` shims or concatenate shell text.
 
+### `desktop-updates` plugin configuration
+
+The Desktop-owned `desktop-updates` row polls for updates (first check 60 seconds after activation, then every six hours), contributes the dynamic tray item **Check for Updates…**, and drives the confirmed download and installer handoff. Its configuration selects the update source:
+
+```yaml
+- id: desktop-updates
+  name: dsh-plugin-desktop/updates
+  config:
+    enabled: true            # background polling in packaged builds
+    initialDelayMs: 60000    # first background check delay
+    intervalMs: 21600000     # delay between background checks
+    requestTimeoutMs: 15000  # one version-request deadline
+    source: service          # 'service' | 'github'
+    githubOwner: ''          # used when source is github
+    githubRepo: ''           # used when source is github
+```
+
+- `service` checks the fixed official endpoint `https://www.dshdesktop.cn/api/desktop/version` and downloads from the fixed platform download endpoints. It is the upstream default.
+- `github` reads `GET https://api.github.com/repos/{owner}/{repo}/releases/latest`, compares the release tag (leading `v` accepted, prereleases ignored) with the installed version, and downloads the preferred installer asset (`.exe`, falling back to `.dmg`). Asset URLs must be credential-free HTTPS. An incomplete `githubOwner`/`githubRepo` falls back to the official `service` endpoints.
+
+This fork's `cordis.patch.yml` pins `source: github` with the fork coordinates, so packaged builds check and download from the fork's own GitHub Releases.
+
 ## Internal and launcher-private capabilities
 
 | Name | Boundary | Plugin-author status |

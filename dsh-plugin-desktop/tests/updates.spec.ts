@@ -16,6 +16,9 @@ const testConfig: UpdateConfig = {
   initialDelayMs: 10,
   intervalMs: 1000,
   requestTimeoutMs: 1000,
+  source: 'service',
+  githubOwner: '',
+  githubRepo: '',
 }
 
 function versionResponse(version: unknown): Response {
@@ -115,6 +118,9 @@ describe('desktop update Host plugin', () => {
       initialDelayMs: 60_000,
       intervalMs: 21_600_000,
       requestTimeoutMs: 15_000,
+      source: 'service',
+      githubOwner: '',
+      githubRepo: '',
     })
     expect(() => Config({ intervalMs: 0 } as UpdateConfig)).toThrow()
     expect(() => Config({ requestTimeoutMs: 0 } as UpdateConfig)).toThrow()
@@ -431,5 +437,57 @@ describe('desktop update Host plugin', () => {
     expect(harness.notifications).toEqual([])
     expect(harness.warnings).toEqual([])
     expect(harness.tray.label()).toBe('Check for Updates…')
+  })
+
+  it('routes the github source to the configured release repository and downloads its asset URL', async () => {
+    const request = vi.fn(async (_url: string, _init: RequestInit) => Response.json({
+      tag_name: 'v2.1.0',
+      assets: [{
+        name: 'DSH-Desktop-2.1.0-x64-Setup.exe',
+        browser_download_url: 'https://example.test/DSH-Desktop-2.1.0-x64-Setup.exe',
+      }],
+    }))
+    const harness = await createHarness({
+      packaged: false,
+      request,
+      config: {
+        ...testConfig,
+        source: 'github',
+        githubOwner: 'kusesad-1122',
+        githubRepo: 'deepseek-harness-desktop',
+      },
+      confirmDownload: async () => true,
+    })
+
+    await harness.tray.invoke()
+
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(request.mock.calls[0]?.[0]).toBe(
+      'https://api.github.com/repos/kusesad-1122/deepseek-harness-desktop/releases/latest',
+    )
+    expect(harness.downloadAndOpen).toHaveBeenCalledWith(
+      '2.1.0',
+      expect.any(AbortSignal),
+      'https://example.test/DSH-Desktop-2.1.0-x64-Setup.exe',
+    )
+    expect(harness.showManualCheckResult).not.toHaveBeenCalled()
+    expect(harness.notifications).toEqual([])
+    expect(harness.warnings).toEqual([])
+  })
+
+  it('falls back to the official service when the github configuration is incomplete', async () => {
+    const request = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ tag_name: 'v2.1.0' }))
+    const harness = await createHarness({
+      packaged: false,
+      request,
+      config: { ...testConfig, source: 'github' },
+    })
+
+    await harness.tray.invoke()
+
+    expect(request).toHaveBeenCalledOnce()
+    expect(request.mock.calls[0]?.[0]).toBe('https://www.dshdesktop.cn/api/desktop/version')
+    expect(harness.showManualCheckResult).toHaveBeenCalledWith(null)
+    expect(harness.downloadAndOpen).not.toHaveBeenCalled()
   })
 })

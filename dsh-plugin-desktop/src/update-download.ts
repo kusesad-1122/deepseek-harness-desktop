@@ -17,6 +17,9 @@ export const DESKTOP_DOWNLOAD_URLS: Readonly<Record<DesktopDownloadPlatform, str
 /** Maximum accepted installer size, in bytes. */
 export const MAX_UPDATE_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 
+/** Maximum accepted explicit installer URL length, in characters. */
+export const MAX_DOWNLOAD_URL_LENGTH = 4096
+
 /** Failure categories exposed to the update coordinator. */
 export type UpdateDownloadErrorCode =
   | 'aborted'
@@ -42,6 +45,8 @@ export interface DownloadDesktopUpdateOptions {
   readonly request: UpdateArtifactRequest
   /** Optional cancellation signal owned by the update coordinator. */
   readonly signal?: AbortSignal
+  /** Optional absolute HTTPS installer URL; defaults to the fixed platform endpoint. */
+  readonly url?: string
 }
 
 /** Typed failure from installer request, validation, or cancellation. */
@@ -94,12 +99,13 @@ export async function downloadDesktopUpdate(options: DownloadDesktopUpdateOption
   const platform = validatedPlatform(options.platform)
   const version = validatedVersion(options.version)
   const userDataPath = validatedUserDataPath(options.userDataPath)
+  const endpoint = options.url === undefined ? DESKTOP_DOWNLOAD_URLS[platform] : validatedDownloadUrl(options.url)
   const paths = await prepareDownloadPaths(userDataPath, platform, version)
   throwIfAborted(options.signal)
 
   let response: Response
   try {
-    response = await options.request(DESKTOP_DOWNLOAD_URLS[platform], {
+    response = await options.request(endpoint, {
       method: 'GET',
       cache: 'no-store',
       redirect: 'follow',
@@ -163,6 +169,22 @@ function validatedUserDataPath(userDataPath: string): string {
     throw new UpdateDownloadError('invalid-options', 'The update user-data path must be an absolute path.')
   }
   return resolve(userDataPath)
+}
+
+function validatedDownloadUrl(input: string): string {
+  if (input.length === 0 || input.length > MAX_DOWNLOAD_URL_LENGTH) {
+    throw new UpdateDownloadError('invalid-options', 'The update download URL must be a short absolute URL.')
+  }
+  let url: URL
+  try {
+    url = new URL(input)
+  } catch {
+    throw new UpdateDownloadError('invalid-options', 'The update download URL must be an absolute URL.')
+  }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') {
+    throw new UpdateDownloadError('invalid-options', 'The update download URL must be a credential-free HTTPS URL.')
+  }
+  return url.href
 }
 
 async function prepareDownloadPaths(

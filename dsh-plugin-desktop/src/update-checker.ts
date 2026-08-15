@@ -6,6 +6,12 @@ export const DESKTOP_VERSION_ENDPOINT = 'https://www.dshdesktop.cn/api/desktop/v
 /** Maximum response body bytes accepted from the version service. */
 export const MAX_VERSION_RESPONSE_BYTES = 4 * 1024
 
+/** Maximum release metadata bytes accepted from the GitHub Releases API. */
+export const MAX_RELEASE_RESPONSE_BYTES = 64 * 1024
+
+/** GitHub owner or repository name shape used before building release API URLs. */
+const GITHUB_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,38})$/u
+
 /** Strictly parsed SemVer components. Numeric components remain strings to avoid overflow. */
 export interface ParsedSemVer {
   /** Canonical version without the optional leading `v`. */
@@ -114,7 +120,7 @@ export async function checkForStableUpdate(
 
   let body: string
   try {
-    body = await readLimitedBody(response)
+    body = await readLimitedBody(response, MAX_VERSION_RESPONSE_BYTES)
   } catch {
     return null
   }
@@ -128,15 +134,125 @@ export async function checkForStableUpdate(
   }
 }
 
+/** Inputs for one GitHub Releases comparison against the installed version. */
+export interface GithubReleaseCheckOptions {
+  /** GitHub owner publishing stable releases. */
+  readonly owner: string
+  /** GitHub repository publishing stable releases. */
+  readonly repo: string
+  /** Installed application version, expressed as canonical stable SemVer. */
+  readonly currentVersion: string
+  /** Caller-owned cancellation signal; the checker does not create its own timeout. */
+  readonly signal?: AbortSignal
+  /** Optional fetch implementation for a host adapter or test. */
+  readonly request?: UpdateRequest
+}
+
+/** Successful comparison with the latest non-prerelease GitHub release. */
+export type GithubReleaseCheckResult = UpdateCheckResult & {
+  /** Download URL of the preferred installer asset, or null when the release has none. */
+  readonly assetUrl: string | null
+}
+
+/** Absolute GitHub Releases API endpoint for one owner and repository. */
+export function githubReleaseEndpoint(owner: string, repo: string): string {
+  return `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/latest`
+}
+
+/**
+ * Compare the latest non-prerelease GitHub release with the installed version.
+ * @param options - repository identity, installed version, caller-owned signal, and optional request adapter.
+ * @returns a successful comparison with its preferred installer asset URL, or null when any step fails.
+ */
+export async function checkForGithubReleaseUpdate(
+  options: GithubReleaseCheckOptions,
+): Promise<GithubReleaseCheckResult | null> {
+  const current = parseCanonicalStableVersion(options.currentVersion)
+  if (current === null) return null
+  if (!GITHUB_NAME_PATTERN.test(options.owner) || !GITHUB_NAME_PATTERN.test(options.repo)) return null
+
+  const init: RequestInit = {
+    method: 'GET',
+    headers: { Accept: 'application/vnd.github+json' },
+    cache: 'no-store',
+    redirect: 'follow',
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  }
+  const request = options.request ?? defaultRequest
+
+  let response: Response
+  try {
+    response = await request(githubReleaseEndpoint(options.owner, options.repo), init)
+  } catch {
+    return null
+  }
+  if (response.status !== 200) return null
+
+  let body: string
+  try {
+    body = await readLimitedBody(response, MAX_RELEASE_RESPONSE_BYTES)
+  } catch {
+    return null
+  }
+
+  const release = parseGithubRelease(body)
+  if (release === null) return null
+  return {
+    status: compareParsedSemVer(release.version, current) > 0 ? 'update-available' : 'up-to-date',
+    currentVersion: current.version,
+    latestVersion: release.version.version,
+    assetUrl: release.assetUrl,
+  }
+}
+
+function parseGithubRelease(body: string): { version: ParsedSemVer, assetUrl: string | null } | null {
+  let value: unknown
+  try {
+    value = JSON.parse(body)
+  } catch {
+    return null
+  }
+  if (!isRecord(value) || typeof value.tag_name !== 'string') return null
+  const parsed = parseSemVer(value.tag_name)
+  if (parsed === null || parsed.prerelease.length > 0) return null
+  return { version: parsed, assetUrl: selectInstallerAsset(value.assets) }
+}
+
+function selectInstallerAsset(assets: unknown): string | null {
+  if (!Array.isArray(assets)) return null
+  let fallback: string | null = null
+  for (const asset of assets) {
+    if (!isRecord(asset) || typeof asset.browser_download_url !== 'string') continue
+    const name = typeof asset.name === 'string' ? asset.name : ''
+    const url = validAssetUrl(asset.browser_download_url, name)
+    if (url === null) continue
+    if (/\.exe$/iu.test(name)) return url
+    if (/\.dmg$/iu.test(name)) fallback ??= url
+  }
+  return fallback
+}
+
+function validAssetUrl(input: string, name: string): string | null {
+  if (name.length === 0 || input.length === 0 || input.length > 4096) return null
+  let url: URL
+  try {
+    url = new URL(input)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') return null
+  return url.href
+}
+
 async function defaultRequest(url: string, init: RequestInit): Promise<Response> {
   return globalThis.fetch(url, init)
 }
 
-async function readLimitedBody(response: Response): Promise<string> {
+async function readLimitedBody(response: Response, limit: number): Promise<string> {
   const declaredLength = response.headers.get('content-length')
   if (declaredLength !== null
     && /^[0-9]+$/u.test(declaredLength)
-    && BigInt(declaredLength) > BigInt(MAX_VERSION_RESPONSE_BYTES)) {
+    && BigInt(declaredLength) > BigInt(limit)) {
     throw new Error('version response is too large')
   }
 
@@ -150,7 +266,7 @@ async function readLimitedBody(response: Response): Promise<string> {
       const chunk = await reader.read()
       if (chunk.done) break
       bytesRead += chunk.value.byteLength
-      if (bytesRead > MAX_VERSION_RESPONSE_BYTES) {
+      if (bytesRead > limit) {
         await reader.cancel().catch(() => undefined)
         throw new Error('version response is too large')
       }

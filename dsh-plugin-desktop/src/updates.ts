@@ -6,6 +6,7 @@ import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import z from '@deepseek-ai/schemastery'
 import type {} from './runtime.ts'
 import {
+  checkForGithubReleaseUpdate,
   checkForStableUpdate,
   parseSemVer,
   type UpdateCheckResult,
@@ -30,7 +31,16 @@ export interface Config {
   intervalMs: number
   /** Maximum duration of one version request before caller-owned cancellation. */
   requestTimeoutMs: number
+  /** Update source: the official version service or one GitHub Releases repository. */
+  source: UpdateSource
+  /** GitHub owner used with the `github` source. */
+  githubOwner: string
+  /** GitHub repository used with the `github` source. */
+  githubRepo: string
 }
+
+/** Selectable update source for version discovery and installer download. */
+export type UpdateSource = 'service' | 'github'
 
 /** Validated scheduled update policy. */
 export const Config: z<Config> = z.object({
@@ -38,7 +48,16 @@ export const Config: z<Config> = z.object({
   initialDelayMs: z.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(60_000),
   intervalMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(6 * 60 * 60 * 1000),
   requestTimeoutMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(15_000),
+  source: z.union([z.const('service'), z.const('github')]).default('service'),
+  githubOwner: z.string().max(39).default(''),
+  githubRepo: z.string().max(100).default(''),
 })
+
+/** One available update together with its optional direct download URL. */
+interface AvailableUpdate {
+  readonly version: string
+  readonly url: string | null
+}
 
 interface UpdateStateV2 {
   readonly version: 2
@@ -57,7 +76,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => {
     let disposed = false
     let checking = false
-    let availableVersion: string | undefined
+    let available: AvailableUpdate | undefined
     let downloadingVersion: string | undefined
     let state: UpdateStateV2 = EMPTY_STATE
     let pollTimer: ReturnType<typeof setTimeout> | undefined
@@ -97,6 +116,23 @@ export function apply(ctx: Context, config: Config): void {
       await persistState()
     }
 
+    const checkCurrentVersion = (signal: AbortSignal): Promise<UpdateCheckResult | null> => {
+      if (config.source === 'github' && config.githubOwner.length > 0 && config.githubRepo.length > 0) {
+        return checkForGithubReleaseUpdate({
+          owner: config.githubOwner,
+          repo: config.githubRepo,
+          currentVersion: adapter.currentVersion,
+          signal,
+          request: adapter.request,
+        })
+      }
+      return checkForStableUpdate({
+        currentVersion: adapter.currentVersion,
+        signal,
+        request: adapter.request,
+      })
+    }
+
     const startCheck = (): Promise<UpdateCheckResult | null> => {
       if (inFlight !== undefined) return inFlight
       checking = true
@@ -107,11 +143,7 @@ export function apply(ctx: Context, config: Config): void {
       const task = (async () => {
         requestTimer = setTimeout(() => { controller.abort() }, config.requestTimeoutMs)
         try {
-          return await checkForStableUpdate({
-            currentVersion: adapter.currentVersion,
-            signal: controller.signal,
-            request: adapter.request,
-          })
+          return await checkCurrentVersion(controller.signal)
         } catch {
           return null
         }
@@ -127,16 +159,16 @@ export function apply(ctx: Context, config: Config): void {
       return task
     }
 
-    const observeResult = (result: UpdateCheckResult | null): string | undefined => {
+    const observeResult = (result: UpdateCheckResult | null): AvailableUpdate | undefined => {
       if (disposed || result === null) return undefined
-      availableVersion = result.status === 'update-available' && adapter.canDownload
-        ? result.latestVersion
+      available = result.status === 'update-available' && adapter.canDownload
+        ? { version: result.latestVersion, url: assetUrlOf(result) }
         : undefined
       refreshTray()
-      return availableVersion
+      return available
     }
 
-    const startDownload = (version: string): Promise<void> => {
+    const startDownload = (version: string, url: string | null): Promise<void> => {
       if (downloadTask !== undefined) return downloadTask
       const task = (async () => {
         let confirmed: boolean
@@ -147,15 +179,19 @@ export function apply(ctx: Context, config: Config): void {
         }
         if (!confirmed || disposed) return
 
-        const confirmedVersion = observeResult(await startCheck())
-        if (confirmedVersion !== version || disposed) return
+        const confirmedUpdate = observeResult(await startCheck())
+        if (confirmedUpdate === undefined || confirmedUpdate.version !== version || disposed) return
 
         const controller = new AbortController()
         downloadController = controller
         downloadingVersion = version
         refreshTray()
         try {
-          await adapter.downloadAndOpen(version, controller.signal)
+          await adapter.downloadAndOpen(
+            confirmedUpdate.version,
+            controller.signal,
+            (confirmedUpdate.url ?? url) ?? undefined,
+          )
         } catch {
           // Network, filesystem, and installer-opening failures are deliberately silent.
         } finally {
@@ -170,25 +206,25 @@ export function apply(ctx: Context, config: Config): void {
       return task
     }
 
-    const offerDownload = async (version: string, automatic: boolean): Promise<void> => {
+    const offerDownload = async (version: string, url: string | null, automatic: boolean): Promise<void> => {
       if (disposed || !adapter.canDownload) return
       await stateReady
       if (disposed || (automatic && state.lastPromptedVersion === version)) return
       await rememberPrompt(version)
-      if (!disposed) await startDownload(version)
+      if (!disposed) await startDownload(version, url)
     }
 
     const runManualCheck = (): Promise<void> => {
       manualTask ??= (async () => {
-        if (availableVersion !== undefined) {
-          await offerDownload(availableVersion, false)
+        if (available !== undefined) {
+          await offerDownload(available.version, available.url, false)
           return
         }
         const result = await startCheck()
         if (disposed) return
-        const version = observeResult(result)
-        if (version !== undefined) {
-          await offerDownload(version, false)
+        const update = observeResult(result)
+        if (update !== undefined) {
+          await offerDownload(update.version, update.url, false)
           return
         }
         await adapter.showManualCheckResult(result)
@@ -199,8 +235,8 @@ export function apply(ctx: Context, config: Config): void {
     const runBackgroundCheck = async (): Promise<void> => {
       if (inFlight !== undefined || disposed) return
       try {
-        const version = observeResult(await startCheck())
-        if (version !== undefined) await offerDownload(version, true)
+        const update = observeResult(await startCheck())
+        if (update !== undefined) await offerDownload(update.version, update.url, true)
       } catch {
         // Scheduled checks never surface failures to the user or the application log.
       }
@@ -219,9 +255,9 @@ export function apply(ctx: Context, config: Config): void {
       group: 'status',
       order: 10,
       label: () => downloadingVersion === undefined
-        ? availableVersion === undefined
+        ? available === undefined
           ? checking ? 'Checking for Updates…' : 'Check for Updates…'
-          : `DSH Desktop ${availableVersion} Available`
+          : `DSH Desktop ${available.version} Available`
         : `Downloading DSH Desktop ${downloadingVersion}…`,
       invoke: runManualCheck,
     })
@@ -281,6 +317,11 @@ function isStableVersion(value: unknown): value is string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function assetUrlOf(result: UpdateCheckResult): string | null {
+  const value = (result as { assetUrl?: unknown }).assetUrl
+  return typeof value === 'string' ? value : null
 }
 
 function isEnoent(value: unknown): boolean {
