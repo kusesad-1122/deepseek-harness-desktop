@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   DESKTOP_VERSION_ENDPOINT,
+  MAX_RELEASE_NOTES_CHARS,
   MAX_RELEASE_RESPONSE_BYTES,
   MAX_VERSION_RESPONSE_BYTES,
   checkForGithubReleaseUpdate,
@@ -8,6 +9,7 @@ import {
   compareSemVerVersions,
   githubReleaseEndpoint,
   parseSemVer,
+  truncateReleaseNotes,
   type UpdateRequest,
 } from '../src/update-checker.ts'
 
@@ -202,6 +204,10 @@ describe('GitHub Releases version check', () => {
       currentVersion: '2.9.9',
       latestVersion: '2.10.0',
       assetUrl: 'https://example.test/DSH-Desktop-2.10.0-x64-Setup.exe',
+      releaseUrl: null,
+      releaseName: null,
+      releaseNotes: null,
+      publishedAt: null,
     })
 
     expect(calls).toHaveLength(1)
@@ -217,8 +223,39 @@ describe('GitHub Releases version check', () => {
     expect(headers.has('x-github-api-version')).toBe(false)
   })
 
-  it('prefers the exe asset and falls back to the dmg asset', async () => {
-    const assets = [
+  it('surfaces the release page, announcement, and publication timestamp', async () => {
+    await expect(checkForGithubReleaseUpdate({
+      owner: 'kusesad-1122',
+      repo: 'deepseek-harness-desktop',
+      currentVersion: '2.9.9',
+      request: async () => Response.json({
+        tag_name: 'v2.10.0',
+        assets: [],
+        html_url: 'https://github.com/kusesad-1122/deepseek-harness-desktop/releases/tag/v2.10.0',
+        name: 'v2.10.0 更新公告',
+        body: '# 更新公告\r\n- 新功能一\r\n- 修复二\r\n',
+        published_at: '2026-08-16T00:00:00Z',
+      }),
+    })).resolves.toMatchObject({
+      status: 'update-available',
+      latestVersion: '2.10.0',
+      assetUrl: null,
+      releaseUrl: 'https://github.com/kusesad-1122/deepseek-harness-desktop/releases/tag/v2.10.0',
+      releaseName: 'v2.10.0 更新公告',
+      releaseNotes: '# 更新公告\n- 新功能一\n- 修复二',
+      publishedAt: '2026-08-16T00:00:00Z',
+    })
+  })
+
+  it('normalizes and caps release announcements for native dialogs', () => {
+    expect(truncateReleaseNotes('   \r\n  ')).toBeNull()
+    expect(truncateReleaseNotes('short\r\nnotes')).toBe('short\nnotes')
+    const capped = truncateReleaseNotes('x'.repeat(MAX_RELEASE_NOTES_CHARS + 10))
+    expect(capped).toHaveLength(MAX_RELEASE_NOTES_CHARS + 1)
+    expect(capped?.endsWith('…')).toBe(true)
+  })
+
+  it('prefers the exe asset and falls back to the dmg asset', async () => {    const assets = [
       { name: 'notes.txt', browser_download_url: 'https://example.test/notes.txt' },
       { name: 'DSH-Desktop-2.10.0.dmg', browser_download_url: 'https://example.test/setup.dmg' },
       { name: 'DSH-Desktop-2.10.0-x64-Setup.exe', browser_download_url: 'https://example.test/setup.exe' },
@@ -248,6 +285,10 @@ describe('GitHub Releases version check', () => {
       currentVersion: '2.10.0',
       latestVersion: '2.10.0',
       assetUrl: null,
+      releaseUrl: null,
+      releaseName: null,
+      releaseNotes: null,
+      publishedAt: null,
     })
     await expect(checkForGithubReleaseUpdate({
       owner: 'kusesad-1122',

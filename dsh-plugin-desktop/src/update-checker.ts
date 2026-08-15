@@ -9,6 +9,9 @@ export const MAX_VERSION_RESPONSE_BYTES = 4 * 1024
 /** Maximum release metadata bytes accepted from the GitHub Releases API. */
 export const MAX_RELEASE_RESPONSE_BYTES = 64 * 1024
 
+/** Maximum release-announcement characters surfaced to native update dialogs. */
+export const MAX_RELEASE_NOTES_CHARS = 4000
+
 /** GitHub owner or repository name shape used before building release API URLs. */
 const GITHUB_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,38})$/u
 
@@ -152,6 +155,14 @@ export interface GithubReleaseCheckOptions {
 export type GithubReleaseCheckResult = UpdateCheckResult & {
   /** Download URL of the preferred installer asset, or null when the release has none. */
   readonly assetUrl: string | null
+  /** HTML URL of the release page carrying the full announcement. */
+  readonly releaseUrl: string | null
+  /** Optional human-readable release title. */
+  readonly releaseName: string | null
+  /** Release announcement body, normalized and capped for native dialogs. */
+  readonly releaseNotes: string | null
+  /** ISO timestamp of the release publication, when GitHub supplied one. */
+  readonly publishedAt: string | null
 }
 
 /** Absolute GitHub Releases API endpoint for one owner and repository. */
@@ -202,10 +213,21 @@ export async function checkForGithubReleaseUpdate(
     currentVersion: current.version,
     latestVersion: release.version.version,
     assetUrl: release.assetUrl,
+    releaseUrl: release.releaseUrl,
+    releaseName: release.releaseName,
+    releaseNotes: release.releaseNotes,
+    publishedAt: release.publishedAt,
   }
 }
 
-function parseGithubRelease(body: string): { version: ParsedSemVer, assetUrl: string | null } | null {
+function parseGithubRelease(body: string): {
+  version: ParsedSemVer
+  assetUrl: string | null
+  releaseUrl: string | null
+  releaseName: string | null
+  releaseNotes: string | null
+  publishedAt: string | null
+} | null {
   let value: unknown
   try {
     value = JSON.parse(body)
@@ -215,7 +237,22 @@ function parseGithubRelease(body: string): { version: ParsedSemVer, assetUrl: st
   if (!isRecord(value) || typeof value.tag_name !== 'string') return null
   const parsed = parseSemVer(value.tag_name)
   if (parsed === null || parsed.prerelease.length > 0) return null
-  return { version: parsed, assetUrl: selectInstallerAsset(value.assets) }
+  return {
+    version: parsed,
+    assetUrl: selectInstallerAsset(value.assets),
+    releaseUrl: typeof value.html_url === 'string' ? value.html_url : null,
+    releaseName: typeof value.name === 'string' ? value.name : null,
+    releaseNotes: typeof value.body === 'string' ? truncateReleaseNotes(value.body) : null,
+    publishedAt: typeof value.published_at === 'string' ? value.published_at : null,
+  }
+}
+
+/** Normalize one release announcement for a native dialog and cap its size. */
+export function truncateReleaseNotes(body: string): string | null {
+  const normalized = body.replace(/\r\n?/gu, '\n').trim()
+  if (normalized === '') return null
+  if (normalized.length <= MAX_RELEASE_NOTES_CHARS) return normalized
+  return `${normalized.slice(0, MAX_RELEASE_NOTES_CHARS)}…`
 }
 
 function selectInstallerAsset(assets: unknown): string | null {

@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import z from '@deepseek-ai/schemastery'
-import type {} from './runtime.ts'
+import type { DesktopUpdateOffer } from './runtime.ts'
 import {
   checkForGithubReleaseUpdate,
   checkForStableUpdate,
@@ -53,10 +53,11 @@ export const Config: z<Config> = z.object({
   githubRepo: z.string().max(100).default(''),
 })
 
-/** One available update together with its optional direct download URL. */
+/** One available update together with its download and announcement facts. */
 interface AvailableUpdate {
   readonly version: string
   readonly url: string | null
+  readonly offer: DesktopUpdateOffer
 }
 
 interface UpdateStateV2 {
@@ -78,6 +79,7 @@ export function apply(ctx: Context, config: Config): void {
     let checking = false
     let available: AvailableUpdate | undefined
     let downloadingVersion: string | undefined
+    let downloadPercent: number | null = null
     let state: UpdateStateV2 = EMPTY_STATE
     let pollTimer: ReturnType<typeof setTimeout> | undefined
     let requestTimer: ReturnType<typeof setTimeout> | undefined
@@ -165,41 +167,55 @@ export function apply(ctx: Context, config: Config): void {
     const observeResult = (result: UpdateCheckResult | null): AvailableUpdate | undefined => {
       if (disposed || result === null) return undefined
       available = result.status === 'update-available' && adapter.canDownload
-        ? { version: result.latestVersion, url: assetUrlOf(result) }
+        ? { version: result.latestVersion, url: assetUrlOf(result), offer: releaseInfoOf(result) }
         : undefined
       refreshTray()
       return available
     }
 
-    const startDownload = (version: string, url: string | null): Promise<void> => {
+    const startDownload = (update: AvailableUpdate): Promise<void> => {
       if (downloadTask !== undefined) return downloadTask
       const task = (async () => {
         let confirmed: boolean
         try {
-          confirmed = await adapter.confirmDownload(version)
+          confirmed = await adapter.confirmDownload(update.version, update.offer)
         } catch {
           return
         }
         if (!confirmed || disposed) return
 
         const confirmedUpdate = observeResult(await startCheck())
-        if (confirmedUpdate === undefined || confirmedUpdate.version !== version || disposed) return
+        if (confirmedUpdate === undefined || confirmedUpdate.version !== update.version || disposed) return
 
         const controller = new AbortController()
         downloadController = controller
-        downloadingVersion = version
+        downloadingVersion = confirmedUpdate.version
+        downloadPercent = null
         refreshTray()
         try {
           await adapter.downloadAndOpen(
             confirmedUpdate.version,
             controller.signal,
-            (confirmedUpdate.url ?? url) ?? undefined,
+            (confirmedUpdate.url ?? update.url) ?? undefined,
+            (received, total) => {
+              if (disposed) return
+              downloadPercent = total === null || total <= 0
+                ? null
+                : Math.max(0, Math.min(100, Math.round((received / total) * 100)))
+              refreshTray()
+            },
           )
-        } catch {
-          // Network, filesystem, and installer-opening failures are deliberately silent.
+        } catch (cause) {
+          if (disposed) return
+          const message = cause instanceof Error ? cause.message : String(cause)
+          adapter.notify({
+            title: 'DSH Desktop Update Failed',
+            body: message === '' ? 'The update could not be installed. Try again later.' : message,
+          })
         } finally {
           if (downloadController === controller) downloadController = undefined
           downloadingVersion = undefined
+          downloadPercent = null
           refreshTray()
         }
       })().finally(() => {
@@ -209,25 +225,25 @@ export function apply(ctx: Context, config: Config): void {
       return task
     }
 
-    const offerDownload = async (version: string, url: string | null, automatic: boolean): Promise<void> => {
+    const offerDownload = async (update: AvailableUpdate, automatic: boolean): Promise<void> => {
       if (disposed || !adapter.canDownload) return
       await stateReady
-      if (disposed || (automatic && state.lastPromptedVersion === version)) return
-      await rememberPrompt(version)
-      if (!disposed) await startDownload(version, url)
+      if (disposed || (automatic && state.lastPromptedVersion === update.version)) return
+      await rememberPrompt(update.version)
+      if (!disposed) await startDownload(update)
     }
 
     const runManualCheck = (): Promise<void> => {
       manualTask ??= (async () => {
         if (available !== undefined) {
-          await offerDownload(available.version, available.url, false)
+          await offerDownload(available, false)
           return
         }
         const result = await startCheck()
         if (disposed) return
         const update = observeResult(result)
         if (update !== undefined) {
-          await offerDownload(update.version, update.url, false)
+          await offerDownload(update, false)
           return
         }
         await adapter.showManualCheckResult(result)
@@ -239,7 +255,7 @@ export function apply(ctx: Context, config: Config): void {
       if (inFlight !== undefined || disposed) return
       try {
         const update = observeResult(await startCheck())
-        if (update !== undefined) await offerDownload(update.version, update.url, true)
+        if (update !== undefined) await offerDownload(update, true)
       } catch {
         // Scheduled checks never surface failures to the user or the application log.
       }
@@ -261,7 +277,7 @@ export function apply(ctx: Context, config: Config): void {
         ? available === undefined
           ? checking ? 'Checking for Updates…' : 'Check for Updates…'
           : `DSH Desktop ${available.version} Available`
-        : `Downloading DSH Desktop ${downloadingVersion}…`,
+        : `Downloading DSH Desktop ${downloadingVersion}…${downloadPercent === null ? '' : ` ${String(downloadPercent)}%`}`,
       invoke: runManualCheck,
     })
     refreshTray = registration.refresh
@@ -325,6 +341,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function assetUrlOf(result: UpdateCheckResult): string | null {
   const value = (result as { assetUrl?: unknown }).assetUrl
   return typeof value === 'string' ? value : null
+}
+
+function releaseInfoOf(result: UpdateCheckResult): DesktopUpdateOffer {
+  const value = result as {
+    releaseUrl?: unknown
+    releaseName?: unknown
+    releaseNotes?: unknown
+    publishedAt?: unknown
+  }
+  return {
+    releaseUrl: typeof value.releaseUrl === 'string' ? value.releaseUrl : null,
+    releaseName: typeof value.releaseName === 'string' ? value.releaseName : null,
+    releaseNotes: typeof value.releaseNotes === 'string' ? value.releaseNotes : null,
+    publishedAt: typeof value.publishedAt === 'string' ? value.publishedAt : null,
+  }
 }
 
 function isEnoent(value: unknown): boolean {
