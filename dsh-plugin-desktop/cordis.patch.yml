@@ -12,6 +12,11 @@
       name: dsh-plugin-desktop/pnpm
     - id: desktop-profiles
       name: dsh-plugin-desktop/profiles
+    - id: desktop-memory
+      name: dsh-plugin-desktop/memory
+      config:
+        memoryEnabled: true
+        userProfileEnabled: true
     - id: desktop-updates
       name: dsh-plugin-desktop/updates
       config:
