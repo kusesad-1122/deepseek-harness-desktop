@@ -15,6 +15,10 @@
     - id: desktop-updates
       name: dsh-plugin-desktop/updates
       config:
+        # Packaged builds use ONLY this fork's GitHub Releases. The upstream
+        # product service is never contacted unless a later profile patch
+        # explicitly sets source: service.
+        enabled: true
         source: github
         githubOwner: kusesad-1122
         githubRepo: deepseek-harness-desktop

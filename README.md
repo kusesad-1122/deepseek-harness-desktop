@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/anywhere-labs/deepseek-harness-desktop"><img src="https://img.shields.io/github/stars/anywhere-labs/deepseek-harness-desktop?style=flat&amp;label=%E2%98%85&amp;color=08C" alt="GitHub stars"></a>
+  <a href="https://github.com/kusesad-1122/deepseek-harness-desktop"><img src="https://img.shields.io/github/stars/kusesad-1122/deepseek-harness-desktop?style=flat&amp;label=%E2%98%85&amp;color=08C" alt="GitHub stars"></a>
   <img src="https://img.shields.io/badge/Desktop-App-47848F?style=flat" alt="Desktop application">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat" alt="MIT License"></a>
   <a href="https://discord.gg/TJeGqKRNM"><img src="https://img.shields.io/badge/Discord-5865F2?style=flat&amp;logo=discord&amp;logoColor=white" alt="Join Discord"></a>
@@ -84,6 +84,8 @@ Desktop 的插件能力已经可以使用。开发者可以通过两个公开接
 - 更适合桌面使用的界面体验
 
 如果你希望通过命令行运行 Harness，或者参与核心功能开发，请优先查看官方仓库。
+
+Desktop 代码层的上游（anywhere-labs）和 Harness 核心层的上游（deepseek-ai）都保持固定 pin，只在维护者主动选择时跟进。应用内更新只检查本 fork 的 GitHub Releases。完整策略见[上游跟进策略](docs/upstream-policy.md)。
 
 ## 特别感谢
 

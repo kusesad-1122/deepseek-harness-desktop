@@ -140,10 +140,10 @@ The Desktop-owned `desktop-updates` row polls for updates (first check 60 second
     githubRepo: ''           # used when source is github
 ```
 
-- `service` checks the fixed official endpoint `https://www.dshdesktop.cn/api/desktop/version` and downloads from the fixed platform download endpoints. It is the upstream default.
-- `github` reads `GET https://api.github.com/repos/{owner}/{repo}/releases/latest`, compares the release tag (leading `v` accepted, prereleases ignored) with the installed version, and downloads the preferred installer asset (`.exe`, falling back to `.dmg`). Asset URLs must be credential-free HTTPS. An incomplete `githubOwner`/`githubRepo` falls back to the official `service` endpoints.
+- `service` checks the fixed official endpoint `https://www.dshdesktop.cn/api/desktop/version` and downloads from the fixed platform download endpoints. It is the upstream default and is used only when `source: service` is set explicitly.
+- `github` reads `GET https://api.github.com/repos/{owner}/{repo}/releases/latest`, compares the release tag (leading `v` accepted, prereleases ignored) with the installed version, and downloads the preferred installer asset (`.exe`, falling back to `.dmg`). Asset URLs must be credential-free HTTPS. An incomplete `githubOwner`/`githubRepo` is treated as no configured channel: the check resolves with no update and the `service` endpoints are never contacted implicitly.
 
-This fork's `cordis.patch.yml` pins `source: github` with the fork coordinates, so packaged builds check and download from the fork's own GitHub Releases.
+This fork's `cordis.patch.yml` pins `source: github` with the fork coordinates, so packaged builds check and download from the fork's own GitHub Releases only.
 
 ## Internal and launcher-private capabilities
 

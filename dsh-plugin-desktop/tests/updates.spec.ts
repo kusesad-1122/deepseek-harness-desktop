@@ -475,7 +475,7 @@ describe('desktop update Host plugin', () => {
     expect(harness.warnings).toEqual([])
   })
 
-  it('falls back to the official service when the github configuration is incomplete', async () => {
+  it('does not contact the official service when the github configuration is incomplete', async () => {
     const request = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ tag_name: 'v2.1.0' }))
     const harness = await createHarness({
       packaged: false,
@@ -485,8 +485,7 @@ describe('desktop update Host plugin', () => {
 
     await harness.tray.invoke()
 
-    expect(request).toHaveBeenCalledOnce()
-    expect(request.mock.calls[0]?.[0]).toBe('https://www.dshdesktop.cn/api/desktop/version')
+    expect(request).not.toHaveBeenCalled()
     expect(harness.showManualCheckResult).toHaveBeenCalledWith(null)
     expect(harness.downloadAndOpen).not.toHaveBeenCalled()
   })
