@@ -36,6 +36,9 @@ export const DESKTOP_PROFILE_NAME = 'desktop'
 /** Standalone package name inserted through the launcher-owned desktop layer. */
 export const DESKTOP_PACKAGE_NAME = 'dsh-plugin-desktop'
 
+/** Renderer-side memory bundle loaded into the user's agent runtime (Web harness). */
+export const DESKTOP_MEMORY_WEB_BUNDLE = 'dsh-plugin-desktop/memory-web'
+
 /** Empty include root rewritten before every profile boot. */
 export const DESKTOP_PROFILE_ROOT = 'cordis.yml'
 
@@ -145,8 +148,12 @@ export interface PreparedDesktopProfile {
  * @returns base, Web carrier, then every third-party bundle in prior order.
  */
 export function desktopBundleList(current: readonly string[]): string[] {
-  const thirdParty = current.filter(name => !REQUIRED_BUNDLE_SET.has(name) && name !== DESKTOP_PACKAGE_NAME)
-  return [...REQUIRED_BUNDLES, ...thirdParty]
+  const thirdParty = current.filter(name =>
+    !REQUIRED_BUNDLE_SET.has(name)
+    && name !== DESKTOP_PACKAGE_NAME
+    && name !== DESKTOP_MEMORY_WEB_BUNDLE,
+  )
+  return [...REQUIRED_BUNDLES, DESKTOP_MEMORY_WEB_BUNDLE, ...thirdParty]
 }
 
 /** Return whether two ordered string lists are identical. */
@@ -181,6 +188,14 @@ export function ensureDesktopProfile(home: string = resolveDshHome()): string {
         },
       },
     })
+  }
+  // Ensure the desktop package itself is resolvable from the profile's
+  // node_modules so the renderer can load the renderer-side memory plugin
+  // (`dsh-plugin-desktop/memory-web`) into the user's actual agent runtime.
+  const dependencies = { ...manifest.dependencies }
+  if (dependencies[DESKTOP_PACKAGE_NAME] === undefined) {
+    dependencies[DESKTOP_PACKAGE_NAME] = `file:${dirname(INSTALL_ANCHOR)}`
+    writeProfileManifest(dir, { ...manifest, dependencies } as ProfileManifest)
   }
   return dir
 }

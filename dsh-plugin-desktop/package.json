@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-desktop",
-  "version": "2.0.14",
+  "version": "2.0.15",
   "description": "DSH Desktop: an Electron shell composed as a DeepSeek Harness Cordis plugin",
   "license": "MIT",
   "repository": {
@@ -55,6 +55,10 @@
     "./memory": {
       "types": "./lib/types/memory.d.ts",
       "default": "./lib/memory.js"
+    },
+    "./memory-web": {
+      "types": "./lib/types/memory-web.d.ts",
+      "default": "./lib/memory-web.js"
     },
     "./package.json": "./package.json"
   },

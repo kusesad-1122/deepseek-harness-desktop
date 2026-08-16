@@ -25,6 +25,7 @@ export const MEMORY_STATE_ROUTE = '/dsh-desktop/memory/state'
 export const MEMORY_APPROVE_ROUTE = '/dsh-desktop/memory/approve'
 export const MEMORY_REJECT_ROUTE = '/dsh-desktop/memory/reject'
 export const MEMORY_APPROVAL_ROUTE = '/dsh-desktop/memory/approval'
+export const MEMORY_WRITE_ROUTE = '/dsh-desktop/memory/write'
 
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {
   response.writeHead(status, {
@@ -97,6 +98,33 @@ export function mountMemoryRoutes(host: MemoryHost, store: MemoryStore, reviewer
     path: MEMORY_STATE_ROUTE,
     handler: async (_request, response) => {
       sendJson(response, 200, await buildState(store, reviewer, config))
+    },
+  }))
+  disposers.push(host.webServer.register({
+    kind: 'exact',
+    path: MEMORY_WRITE_ROUTE,
+    handler: async (request, response) => {
+      if (!sameOrigin(request)) return sendJson(response, 403, { error: 'cross-origin rejected' })
+      try {
+        const body = await readJsonBody(request) as { target?: unknown, operations?: unknown, origin?: unknown }
+        const target = body.target
+        if (target !== 'memory' && target !== 'user') return sendJson(response, 400, { error: 'target must be memory or user' })
+        const origin = body.origin === 'review' ? 'review' as const : 'foreground' as const
+        if (!Array.isArray(body.operations) || body.operations.length === 0) return sendJson(response, 400, { error: 'operations required' })
+        const operations = body.operations.map((operation) => {
+          const op = (operation ?? {}) as Record<string, unknown>
+          const action = op.action
+          if (action !== 'add' && action !== 'replace' && action !== 'remove') throw new Error('action must be add, replace, or remove')
+          return {
+            action,
+            ...(typeof op.content === 'string' && op.content !== '' ? { content: op.content } : {}),
+            ...(typeof op.oldText === 'string' && op.oldText !== '' ? { oldText: op.oldText } : {}),
+          }
+        }) as Parameters<typeof store.applyOperations>[1]
+        sendJson(response, 200, await store.applyOperations(target, operations, { origin }))
+      } catch (error) {
+        sendJson(response, 400, { error: String(error) })
+      }
     },
   }))
   return () => {
