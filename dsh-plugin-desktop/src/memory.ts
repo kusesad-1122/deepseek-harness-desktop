@@ -16,8 +16,16 @@ import { blockedSnapshotEntry, scanThreats } from './threat-scan.ts'
 /** Stable Cordis plugin name. */
 export const name = 'desktop-memory'
 
-/** The active Desktop profile owns the memory directory for this generation. */
-export const inject = ['desktopProfiles']
+/**
+ * Services the memory plugin drives. The reviewer streams through `llm`, the
+ * dynamic prompt section uses `systemPrompt`, and the model-facing surface is
+ * the `memory` tool + `/memory` command (`tools` / `commands`). These MUST be
+ * declared here: Cordis' service guard throws "cannot get property X without
+ * inject" on any undeclared access — which is exactly why the automatic review
+ * errored (`ctx.llm`) and the tool/prompt/command silently failed to register
+ * on previous versions.
+ */
+export const inject = ['desktopProfiles', 'systemPrompt', 'tools', 'commands', 'llm']
 
 /** One of the two bounded stores. */
 export type MemoryTarget = 'memory' | 'user'
