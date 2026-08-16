@@ -1,15 +1,17 @@
 /**
  * Hermes-style update dialogs for DSH Desktop: a single styled modal window
- * (inline HTML, no preload) with three phases:
+ * (inline HTML, no preload, frameless) with three phases:
  *
  *   available   — "⚠ DSH Desktop 更新可用" banner, current → next version,
  *                 release-notes preview, buttons [立即更新][查看公告][稍后]
- *   progress    — stage line + animated progress bar + percent
+ *   progress    — stage line + animated progress bar + percent + 取消
  *   done        — "安装已就绪" + [立即重启安装][稍后]
  *
  * The action channel is a synthetic navigation to `https://dsh-update.local/…`
- * intercepted by `will-navigate` (no contextBridge, no preload). Any failure
- * constructing or driving the window falls back to the caller's native path.
+ * intercepted by `will-navigate` (no contextBridge, no preload). The window is
+ * frameless with its own draggable title bar and a ✕ close button, so it does
+ * not inherit the native Windows chrome. Any failure constructing or driving
+ * the window falls back to the caller's native path.
  */
 
 import { BrowserWindow } from 'electron'
@@ -40,8 +42,13 @@ interface DonePayload {
 
 const STYLE = `  :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: ui-monospace, Consolas, "Cascadia Mono", monospace; background: #14100c; color: #e8dcc8; }
-  .wrap { padding: 20px 22px; }
+  html, body { height: 100%; }
+  body { margin: 0; font-family: ui-monospace, Consolas, "Cascadia Mono", monospace; background: #14100c; color: #e8dcc8; overflow: hidden; }
+  .titlebar { -webkit-app-region: drag; height: 34px; display: flex; align-items: center; padding: 0 8px; }
+  .titlebar .ttl { flex: 1; font-size: 12px; color: #b8a888; padding-left: 8px; user-select: none; }
+  .titlebar .close { -webkit-app-region: no-drag; background: none; border: none; color: #b8a888; font-size: 15px; line-height: 1; cursor: pointer; width: 26px; height: 26px; border-radius: 6px; padding: 0; }
+  .titlebar .close:hover { color: #ff6b6b; background: rgba(255, 255, 255, 0.06); }
+  .wrap { padding: 0 22px 20px; }
   .banner { font-size: 15px; font-weight: 700; color: #f5c542; margin-bottom: 6px; }
   .sub { color: #b8a888; font-size: 12px; margin-bottom: 14px; }
   .vrow { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; font-size: 14px; }
@@ -110,17 +117,26 @@ const PAGE_JS = `
       document.getElementById('b-later2').onclick = () => window.__act('later');
     }
   };
-  window.__updateProgress = (stage, percent) => {
-    if (window.__phase !== 'progress') return;
+  window.__updateProgress = (stage, percent, version) => {
+    // A progress-only window never runs ask(), so __phase is not set here.
+    // First call must render the progress UI itself instead of early-returning,
+    // or the window stays blank (only the dark background shows).
+    if (window.__phase !== 'progress') {
+      window.__render('progress', { version: version || '', stage, percent });
+      return;
+    }
     const data = Object.assign({}, window.__data, { stage, percent });
     window.__mount('progress', data);
   };
+  document.getElementById('b-x').onclick = () => window.__act('later');
 `
 
 function pageHtml(): string {
   return `<!doctype html><html><head><meta charset="utf-8"><title>DSH Desktop 更新</title>
 <style>${STYLE}</style></head>
-<body><div class="wrap"><div id="root"></div></div>
+<body>
+<div class="titlebar"><span class="ttl">DSH Desktop 更新</span><button class="close" id="b-x" title="关闭">✕</button></div>
+<div class="wrap"><div id="root"></div></div>
 <script>${PAGE_JS}</script></body></html>`
 }
 
@@ -134,17 +150,21 @@ function renderCall(phase: string, payload: unknown): string {
  */
 export class UpdateDialog {
   private readonly window: BrowserWindow
+  private readonly loaded: Promise<void>
   private pending: { resolve: (action: UpdateDialogAction) => void } | undefined
 
   constructor(parent: BrowserWindow | undefined) {
     this.window = new BrowserWindow({
       width: 460,
-      height: 340,
+      height: 380,
       resizable: false,
       minimizable: false,
       maximizable: false,
       fullscreenable: false,
       show: false,
+      // Frameless: the page draws its own draggable title bar, so the dialog
+      // does not look like a native Windows window.
+      frame: false,
       title: 'DSH Desktop 更新',
       backgroundColor: '#14100c',
       autoHideMenuBar: true,
@@ -161,15 +181,25 @@ export class UpdateDialog {
       if (!url.startsWith(ACTION_PREFIX)) return
       event.preventDefault()
       const action = url.slice(ACTION_PREFIX.length) as UpdateDialogAction
-      this.pending?.resolve(action)
-      this.pending = undefined
+      if (this.pending !== undefined) {
+        const resolve = this.pending.resolve
+        this.pending = undefined
+        resolve(action)
+      } else if (action === 'later' || action === 'cancel') {
+        // No question pending (progress window): closing the dialog dismisses
+        // it while the background download keeps running.
+        void this.window.destroy()
+      }
     })
     this.window.webContents.on('did-fail-load', (_event, _code, _description) => {
       this.pending?.resolve('cancel')
       this.pending = undefined
       void this.window.destroy()
     })
-    void this.window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(pageHtml())}`)
+    // Keep the load promise so later calls never race an in-flight data: URL
+    // load with executeJavaScript (which would leave the window blank).
+    this.loaded = this.window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(pageHtml())}`)
+      .catch(() => {})
   }
 
   /** Ask a question and wait for a single button press. */
@@ -177,7 +207,7 @@ export class UpdateDialog {
     await this.ready()
     const promise = new Promise<UpdateDialogAction>((resolve) => { this.pending = { resolve } })
     await this.window.webContents.executeJavaScript(renderCall(phase, payload), true)
-    this.window.setSize(phase === 'available' ? 460 : 400, phase === 'available' ? 380 : 240)
+    this.window.setSize(phase === 'available' ? 460 : 400, phase === 'available' ? 380 : 250)
     this.window.show()
     this.window.focus()
     return promise
@@ -186,8 +216,10 @@ export class UpdateDialog {
   /** Render a live progress update (no new user interaction needed). */
   async progress(payload: ProgressPayload): Promise<void> {
     if (this.window.isDestroyed()) return
+    await this.ready()
+    this.window.setSize(420, 250)
     await this.window.webContents.executeJavaScript(
-      `window.__updateProgress(${JSON.stringify(payload.stage)}, ${JSON.stringify(payload.percent)})`,
+      `window.__updateProgress(${JSON.stringify(payload.stage)}, ${JSON.stringify(payload.percent)}, ${JSON.stringify(payload.version)})`,
       true,
     ).catch(() => {})
     this.window.show()
@@ -201,15 +233,7 @@ export class UpdateDialog {
   }
 
   private async ready(): Promise<void> {
-    if (this.window.webContents.isLoading()) {
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 3000)
-        this.window.webContents.once('did-finish-load', () => {
-          clearTimeout(timer)
-          resolve()
-        })
-      })
-    }
+    await this.loaded
   }
 }
 
