@@ -283,8 +283,8 @@ export function apply(ctx: Context, config: Config): void {
     })
     refreshTray = registration.refresh
 
-    // Web-side manual check + state routes so the sidebar "检查更新" button can
-    // trigger the same flow as the tray item.
+    // Web-side manual check + state routes so the Settings → About "检查更新"
+    // button (and the tray item) trigger the same flow.
     ctx.inject(['webServer'], (hostCtx: Context) => {
       const host = hostCtx as unknown as {
         webServer: { register(route: { kind: 'exact' | 'prefix', path: string, handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void> }): () => void }
@@ -309,6 +309,7 @@ export function apply(ctx: Context, config: Config): void {
           path: '/dsh-desktop/updates/state',
           handler: (_request, response) => {
             sendJson(response, 200, {
+              currentVersion: adapter.currentVersion,
               checking,
               downloadingVersion,
               downloadPercent,
