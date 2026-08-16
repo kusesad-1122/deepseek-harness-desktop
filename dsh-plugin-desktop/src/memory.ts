@@ -4,8 +4,10 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
+import type {} from '@deepseek-ai/dsh-commands'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
+import { MemoryReviewer, ReviewConfig } from './memory-review.ts'
 import type {} from './profile-service.ts'
 
 /** Stable Cordis plugin name. */
@@ -37,8 +39,8 @@ export interface MemoryToolResult {
   readonly driftBackup?: string
 }
 
-/** Bounded-memory policy. */
-export interface Config {
+/** Bounded-memory policy, including the automatic review rhythm. */
+export interface Config extends ReviewConfig {
   /** Inject and manage the agent's MEMORY.md store. */
   memoryEnabled: boolean
   /** Inject and manage the user's USER.md store. */
@@ -55,6 +57,12 @@ export const Config: z<Config> = z.object({
   userProfileEnabled: z.boolean().default(true),
   memoryCharLimit: z.number().step(1).min(1).default(2200),
   userCharLimit: z.number().step(1).min(1).default(1375),
+  reviewEnabled: z.boolean().default(true),
+  reviewInterval: z.number().step(1).min(1).max(100).default(6),
+  reviewCooldownMs: z.number().step(1).min(0).default(60_000),
+  reviewTimeoutMs: z.number().step(1).min(1_000).max(300_000).default(60_000),
+  reviewMaxDigestChars: z.number().step(1).min(500).default(8_000),
+  reviewMaxOutputTokens: z.number().step(1).min(64).max(4_096).default(512),
 })
 
 const ENTRY_DELIMITER = '\n§\n'
@@ -448,10 +456,12 @@ export function apply(ctx: Context, config: Config): void {
     memoryCharLimit: config.memoryCharLimit,
     userCharLimit: config.userCharLimit,
   })
+  const reviewer = new MemoryReviewer(join(ctx.desktopProfiles.current.dir, 'memory'))
 
   ctx.effect(async () => {
     try {
       await store.loadFromDisk()
+      await reviewer.loadState()
     } catch (error) {
       ctx.logger.warn('dsh-plugin-desktop: memory store failed to load; continuing with an empty store: %s', String(error))
     }
@@ -485,10 +495,37 @@ export function apply(ctx: Context, config: Config): void {
           rawInput: (args as { operations?: unknown, action?: unknown }).operations ?? (args as { action?: unknown }).action,
         }),
       })))
+      disposers.push(ctx.commands.register({
+        name: 'memory',
+        description: 'Show current cross-session memory, usage, and review state',
+        handler: () => ({ kind: 'success', text: renderMemoryStatus(store, reviewer, config) }),
+      }))
+    }
+
+    // Hermes L4 learning loop: every N user turns, a detached one-shot review
+    // curates durable entries through the same guarded store path.
+    if (config.reviewEnabled) {
+      disposers.push(reviewer.attach(ctx, store, config))
     }
 
     return () => {
       for (const dispose of [...disposers].reverse()) dispose()
     }
   }, 'dsh-plugin-desktop: bounded cross-session memory')
+}
+
+/** Human-readable `/memory` view: live entries, budgets, and review rhythm. */
+function renderMemoryStatus(store: MemoryStore, reviewer: MemoryReviewer, config: Config): string {
+  const targets: readonly MemoryTarget[] = ['memory', 'user']
+  const sections = targets.map((target) => {
+    const entries = store.currentEntries(target)
+    const header = `${BLOCK_HEADERS[target]} [${store.charCount(target)}/${String(target === 'user' ? config.userCharLimit : config.memoryCharLimit)} chars, ${String(entries.length)} entries]`
+    const body = entries.length === 0 ? '(empty)' : entries.map((entry, index) => `${String(index + 1)}. ${entry}`).join('\n')
+    return `${header}\n${body}`
+  })
+  const reviewed = reviewer.lastReviewedSecondsAgo()
+  const rhythm = reviewed < 0
+    ? 'no automatic review has run yet'
+    : `last automatic review ${String(reviewed)}s ago (every ${String(config.reviewInterval)} user turns)`
+  return `${sections.join('\n\n')}\n\nreview: ${config.reviewEnabled ? 'enabled' : 'disabled'} — ${rhythm}`
 }

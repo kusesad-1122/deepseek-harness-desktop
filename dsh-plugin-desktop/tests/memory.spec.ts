@@ -18,6 +18,12 @@ const defaultConfig: MemoryConfig = {
   userProfileEnabled: true,
   memoryCharLimit: 2200,
   userCharLimit: 1375,
+  reviewEnabled: true,
+  reviewInterval: 6,
+  reviewCooldownMs: 60_000,
+  reviewTimeoutMs: 60_000,
+  reviewMaxDigestChars: 8_000,
+  reviewMaxOutputTokens: 512,
 }
 
 async function makeStore(limits: Partial<Pick<MemoryConfig, 'memoryCharLimit' | 'userCharLimit'>> = {}) {
@@ -165,6 +171,12 @@ describe('memory Host plugin', () => {
       userProfileEnabled: true,
       memoryCharLimit: 2200,
       userCharLimit: 1375,
+      reviewEnabled: true,
+      reviewInterval: 6,
+      reviewCooldownMs: 60_000,
+      reviewTimeoutMs: 60_000,
+      reviewMaxDigestChars: 8_000,
+      reviewMaxOutputTokens: 512,
     })
     expect(() => Config({ memoryCharLimit: 0 } as MemoryConfig)).toThrow()
   })
@@ -196,6 +208,10 @@ describe('memory Host plugin', () => {
           return () => {}
         },
       },
+      commands: {
+        register: (_definition: { name: string, description: string, handler: () => unknown }) => () => {},
+      },
+      on: (_type: string, _listener: (payload: never) => void) => () => {},
       logger: { warn: (...args: unknown[]) => { warnings.push(args) } },
       effect: (register: () => Promise<() => void>) => {
         void register().then((release) => { disposer = release })
@@ -228,6 +244,8 @@ describe('memory Host plugin', () => {
       desktopProfiles: { current: { name: 'test', dir: root }, list: () => [], select: async () => {} },
       systemPrompt: { section: (section: { name: string }) => { sections.push(section); return () => {} } },
       tools: { register: (definition: ToolDefinition) => { tools.push(definition); return () => {} } },
+      commands: { register: () => () => {} },
+      on: () => () => {},
       logger: { warn: (...args: unknown[]) => { warnings.push(args) } },
       effect: (register: () => Promise<() => void>) => { void register() },
     } as unknown as Context
