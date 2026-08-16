@@ -159,9 +159,18 @@ The Desktop-owned `desktop-memory` row owns bounded cross-session memory. It rea
     userProfileEnabled: true # inject and manage USER.md
     memoryCharLimit: 2200    # hard char budget for MEMORY.md
     userCharLimit: 1375      # hard char budget for USER.md
+    # Hermes-style L4 loop: detached one-shot review every N user turns.
+    reviewEnabled: true
+    reviewInterval: 6        # user turns between automatic reviews
+    reviewCooldownMs: 60000  # minimum wall time between reviews
+    reviewTimeoutMs: 60000   # hard timeout for one review LLM call
+    reviewMaxDigestChars: 8000
+    reviewMaxOutputTokens: 512
 ```
 
 Tool writes are durable immediately but only enter the system prompt on the next generation. Business failures (over budget, ambiguous substring match, external file drift) are returned as structured `success: false` tool values with `currentEntries`/`usage`, never as thrown tool errors.
+
+The automatic review loop listens on `agent/turn-stopping`, returns immediately, and runs one bounded `ctx.llm.stream()` call detached from the turn. It extracts a digest of recent human `user/message` events (plugin-injected messages are skipped, assistant text is capped), applies the Hermes curation policy, and commits through the same `MemoryStore` lock/drift/budget path as the model-facing tool. The auxiliary LLM call carries no `sessionId`, so review traffic never enters the user's session log. The `/memory` command reports live entries, both char budgets, and the review rhythm.
 
 ## Internal and launcher-private capabilities
 

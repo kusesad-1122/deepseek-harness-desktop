@@ -17,6 +17,14 @@
       config:
         memoryEnabled: true
         userProfileEnabled: true
+        # Hermes L4 learning loop: detached background review every N user
+        # turns, one bounded LLM call, writes through the same guarded store.
+        reviewEnabled: true
+        reviewInterval: 6
+        reviewCooldownMs: 60000
+        reviewTimeoutMs: 60000
+        reviewMaxDigestChars: 8000
+        reviewMaxOutputTokens: 512
     - id: desktop-updates
       name: dsh-plugin-desktop/updates
       config:
