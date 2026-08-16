@@ -1,6 +1,6 @@
 /**
  * Hermes-style update dialogs for DSH Desktop: a single styled modal window
- * (inline HTML, no preload, frameless) with three phases:
+ * (local HTML, no preload, frameless) with three phases:
  *
  *   available   — "⚠ DSH Desktop 更新可用" banner, current → next version,
  *                 release-notes preview, buttons [立即更新][查看公告][稍后]
@@ -9,12 +9,18 @@
  *
  * The action channel is a synthetic navigation to `https://dsh-update.local/…`
  * intercepted by `will-navigate` (no contextBridge, no preload). The window is
- * frameless with its own draggable title bar and a ✕ close button, so it does
- * not inherit the native Windows chrome. Any failure constructing or driving
- * the window falls back to the caller's native path.
+ * frameless with its own draggable title bar and a ✕ close button.
+ *
+ * Robustness contract: the dialog only ever SHOWS once the page is verified to
+ * have rendered (a `typeof window.__mount === "function"` probe after load).
+ * If the page failed to initialize — the cause of the black, unclosable
+ * windows in packaged builds — the window is destroyed immediately and the
+ * caller falls back to native UI. A black, stuck dialog is never presented.
  */
 
-import { BrowserWindow } from 'electron'
+import { app, BrowserWindow } from 'electron'
+import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { DesktopUpdateOffer } from './runtime.ts'
 
 const ACTION_HOST = 'dsh-update.local'
@@ -120,7 +126,7 @@ const PAGE_JS = `
   window.__updateProgress = (stage, percent, version) => {
     // A progress-only window never runs ask(), so __phase is not set here.
     // First call must render the progress UI itself instead of early-returning,
-    // or the window stays blank (only the dark background shows).
+    // or the window stays blank.
     if (window.__phase !== 'progress') {
       window.__render('progress', { version: version || '', stage, percent });
       return;
@@ -146,7 +152,8 @@ function renderCall(phase: string, payload: unknown): string {
 
 /**
  * One live, styled update window. Create it, drive it through the phases, and
- * close it. Any construction error rejects so callers fall back to native UI.
+ * close it. Any construction or render failure rejects so callers fall back to
+ * native UI — a blank/stuck window is never shown.
  */
 export class UpdateDialog {
   private readonly window: BrowserWindow
@@ -196,15 +203,34 @@ export class UpdateDialog {
       this.pending = undefined
       void this.window.destroy()
     })
-    // Keep the load promise so later calls never race an in-flight data: URL
-    // load with executeJavaScript (which would leave the window blank).
-    this.loaded = this.window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(pageHtml())}`)
-      .catch(() => {})
+    // Load from a local temp file (more reliable than a data: URL in packaged
+    // builds); fall back to the data: URL only if the write fails.
+    this.loaded = this.preparePage().catch(() => {})
+  }
+
+  private async preparePage(): Promise<void> {
+    const html = pageHtml()
+    try {
+      const file = join(app.getPath('temp'), `dsh-update-${process.pid}-${Date.now().toString(36)}.html`)
+      await writeFile(file, html, 'utf8')
+      await this.window.loadFile(file)
+    } catch {
+      await this.window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    }
+  }
+
+  /** Probe the page: the mount function must exist, else rendering failed. */
+  private async verifyRendered(): Promise<void> {
+    const ready = await this.window.webContents.executeJavaScript('typeof window.__mount === "function"')
+    if (ready !== true) {
+      throw new Error('update dialog page did not initialize its script')
+    }
   }
 
   /** Ask a question and wait for a single button press. */
   async ask(phase: 'available' | 'done', payload: AvailablePayload | DonePayload): Promise<UpdateDialogAction> {
     await this.ready()
+    await this.verifyRendered()
     const promise = new Promise<UpdateDialogAction>((resolve) => { this.pending = { resolve } })
     await this.window.webContents.executeJavaScript(renderCall(phase, payload), true)
     this.window.setSize(phase === 'available' ? 460 : 400, phase === 'available' ? 380 : 250)
@@ -213,15 +239,25 @@ export class UpdateDialog {
     return promise
   }
 
-  /** Render a live progress update (no new user interaction needed). */
+  /**
+   * Render a live progress update. On any failure the window is destroyed and
+   * the error rethrown so the caller falls back to tray/native — the previous
+   * swallowed-failure behavior is what left a black, unclosable window.
+   */
   async progress(payload: ProgressPayload): Promise<void> {
     if (this.window.isDestroyed()) return
-    await this.ready()
+    try {
+      await this.ready()
+      await this.verifyRendered()
+      await this.window.webContents.executeJavaScript(
+        `window.__updateProgress(${JSON.stringify(payload.stage)}, ${JSON.stringify(payload.percent)}, ${JSON.stringify(payload.version)})`,
+        true,
+      )
+    } catch (error) {
+      if (!this.window.isDestroyed()) this.window.destroy()
+      throw error
+    }
     this.window.setSize(420, 250)
-    await this.window.webContents.executeJavaScript(
-      `window.__updateProgress(${JSON.stringify(payload.stage)}, ${JSON.stringify(payload.percent)}, ${JSON.stringify(payload.version)})`,
-      true,
-    ).catch(() => {})
     this.window.show()
   }
 
