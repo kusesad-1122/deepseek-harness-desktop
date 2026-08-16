@@ -9,13 +9,15 @@ import { applyAdvancedShell } from './advanced-shell.ts'
 import { parseDesktopClientEnvironment } from './environment.ts'
 import { en, zh } from './memory-locales.ts'
 import { MemoryPanel, type MemoryTranslate } from './memory-section.tsx'
-import { UpdateSidebarAction } from './update-sidebar.tsx'
+import { AboutPanel, type AboutTranslate } from './about-section.tsx'
+import { en as aboutEn, zh as aboutZh } from './about-locales.ts'
 
 export { applyAdvancedShell } from './advanced-shell.ts'
 export { parseDesktopClientEnvironment } from './environment.ts'
 export type { DesktopClientEnvironment, DesktopClientMode, DesktopClientPlatform } from './environment.ts'
 
 const MEMORY_NS = 'dsh-desktop-memory'
+const ABOUT_NS = 'dsh-desktop-about'
 
 /** Services required by the memory panel and advanced presentation. */
 export const inject = [
@@ -40,7 +42,9 @@ export function apply(ctx: ClientContext): void {
   const locale = ctx.locale as unknown as MemoryLocaleService
   const slots = ctx.slots as unknown as MemorySlotsService
   locale.register(MEMORY_NS, { zh, en })
+  locale.register(ABOUT_NS, { zh: aboutZh, en: aboutEn })
   const t = locale.bind(MEMORY_NS)
+  const aboutT = locale.bind(ABOUT_NS) as AboutTranslate
 
   // The memory settings section is visible in BOTH desktop modes: it is the
   // user-facing proof that bounded memory and the automatic review are alive.
@@ -53,14 +57,18 @@ export function apply(ctx: ClientContext): void {
     inject: () => ({ t }),
   }, () => h(MemoryPanel, { t })))
 
-  // Sidebar footer "检查更新" action: manual check on click, coexisting with
-  // the automatic background checks (and the tray item).
-  slots.inject('sidebar.footer.action', () => slots.register({
-    name: 'sidebar.footer.action',
-    id: 'desktop-updates-check',
-    order: 10,
-    label: () => 'Check for Updates',
-  }, (props: unknown) => h(UpdateSidebarAction, { wide: Boolean((props as { wide?: boolean })?.wide) })))
+  // About settings section: a short intro to the app plus the manual "检查更新"
+  // action. This replaces the old sidebar footer "检查更新" button, which
+  // crowded the new-session sidebar and forced neighbouring horizontal labels
+  // to wrap vertically.
+  slots.inject('settings.section', () => slots.register({
+    name: 'settings.section',
+    id: 'desktop-about',
+    order: 100,
+    label: () => aboutT('nav'),
+    locale: ABOUT_NS,
+    inject: () => ({ t: aboutT }),
+  }, () => h(AboutPanel, { t: aboutT })))
 
   const environment = parseDesktopClientEnvironment(window.location.search)
   if (environment.mode === 'advanced') applyAdvancedShell(ctx, environment)
