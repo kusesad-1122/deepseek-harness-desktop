@@ -94,6 +94,8 @@ const GATE_STATE_FILE = 'approval-state.json'
 const AUDIT_FILE = 'audit.jsonl'
 const PENDING_DIR = 'pending'
 const PENDING_ID = /^[0-9a-z]+-[0-9a-f]+$/i
+const CONVERSATIONS_FILE = 'CONVERSATIONS.md'
+const MAX_CONVERSATIONS = 5
 
 /** System-prompt headers rendered for each bounded store. */
 const BLOCK_HEADERS: Readonly<Record<MemoryTarget, string>> = {
@@ -168,6 +170,7 @@ function clean(value: unknown): string {
 export class MemoryStore {
   private readonly entries: Record<MemoryTarget, string[]> = { memory: [], user: [] }
   private snapshot: Record<MemoryTarget, string> = { memory: '', user: '' }
+  private conversations: string[] = []
   /** Consecutive consolidation failures; a failed side effect must not stall the turn. */
   private consolidationFailures = 0
   private approvalEnabled: boolean
@@ -190,17 +193,45 @@ export class MemoryStore {
       this.entries[target] = live
       this.snapshot[target] = this.renderBlock(target, live.map(entry => blockedSnapshotEntry(entry) ?? entry))
     }
+    const conv = await readRaw(join(this.dir, CONVERSATIONS_FILE))
+    if (!conv.readFailed && conv.text.trim() !== '') {
+      this.conversations = parseEntries(conv.text).slice(-MAX_CONVERSATIONS)
+    }
   }
 
-  /** Frozen, fenced snapshot text for the enabled targets, or '' when both are empty. */
+  /**
+   * LIVE, fenced snapshot text for the enabled targets, or '' when empty.
+   *
+   * Reads the in-memory `entries` (the same source the panel shows and the
+   * review writes through) — NOT the frozen `snapshot` captured at load. That
+   * frozen snapshot is exactly why a conversation that started empty never saw
+   * the memory written later in the same run: the prompt stayed empty even
+   * though MEMORY.md/USER.md were on disk. New sessions now see the current
+   * store, including recent-conversation summaries, so they can answer both
+   * "what do you know about me" and "what did we talk about before".
+   */
   snapshotText(enabled: Readonly<Record<MemoryTarget, boolean>>): string {
-    const targets: readonly MemoryTarget[] = ['memory', 'user']
-    const body = targets
-      .filter(target => enabled[target] && this.snapshot[target] !== '')
-      .map(target => this.snapshot[target])
-      .join('\n\n')
-    if (body === '') return ''
-    return `<memory-context>\n${SNAPSHOT_FENCE_NOTE}\n\n${body}\n</memory-context>`
+    const parts: string[] = []
+    if (enabled.memory && this.entries.memory.length > 0) {
+      parts.push(`MEMORY (your personal notes):\n- ${this.entries.memory.join('\n- ')}`)
+    }
+    if (enabled.user && this.entries.user.length > 0) {
+      parts.push(`USER PROFILE (who the user is):\n- ${this.entries.user.join('\n- ')}`)
+    }
+    if (this.conversations.length > 0) {
+      parts.push(`RECENT CONVERSATIONS (summaries of past sessions — use them to answer "what did we talk about before"):\n- ${this.conversations.join('\n- ')}`)
+    }
+    if (parts.length === 0) return ''
+    const body = parts.join('\n\n')
+    return `<memory-context>\n${SNAPSHOT_FENCE_NOTE}\n\nWhen asked about the user, their preferences, or previous work in this or a later conversation, answer from the memory below — it carries over from past sessions.\n\n${body}\n</memory-context>`
+  }
+
+  /** Append one recent-conversation summary, keeping only the newest ones. */
+  async recordConversation(summary: string): Promise<void> {
+    const text = clean(summary)
+    if (text === '') return
+    this.conversations = [...this.conversations, text].slice(-MAX_CONVERSATIONS)
+    await writeFileDurable(join(this.dir, CONVERSATIONS_FILE), `${this.conversations.join(ENTRY_DELIMITER)}\n`, { mode: 0o600, dirMode: 0o700 })
   }
 
   /** Current state of the write-approval gate (runtime toggleable). */
