@@ -75,8 +75,9 @@ const REVIEW_SYSTEM_PROMPT = [
   'Keep each entry a single concise statement of at most 200 characters, in the language the user writes in.',
   'If nothing meets the bar, reply with exactly: Nothing to save.',
   'Otherwise reply with ONLY strict JSON and nothing else, using this exact shape:',
-  '{"memory":["entry","..."],"user":["entry","..."]}',
+  '{"memory":["entry","..."],"user":["entry","..."],"conversation":"one concise sentence summarizing what this session was about"}',
   'Use "memory" for project/environment notes; use "user" for facts and preferences about the user.',
+  'The "conversation" field is required: a single plain-language sentence capturing the topic and outcome of this session, so a later session can answer "what did we talk about before". Never omit it.',
 ].join('\n')
 
 const REVIEW_USER_PREFIX = [
@@ -85,9 +86,9 @@ const REVIEW_USER_PREFIX = [
 ].join('\n')
 
 /** Parse the reviewer output; accepts an exact "Nothing to save." or a strict JSON object. */
-export function parseReviewOutput(text: string): { memory: string[], user: string[] } {
+export function parseReviewOutput(text: string): { memory: string[], user: string[], conversation: string } {
   const trimmed = text.trim()
-  if (/^Nothing to save\.?$/i.test(trimmed)) return { memory: [], user: [] }
+  if (/^Nothing to save\.?$/i.test(trimmed)) return { memory: [], user: [], conversation: '' }
   const start = trimmed.indexOf('{')
   const end = trimmed.lastIndexOf('}')
   if (start === -1 || end <= start) {
@@ -103,6 +104,7 @@ export function parseReviewOutput(text: string): { memory: string[], user: strin
   return {
     memory: stringArray(record['memory']),
     user: stringArray(record['user']),
+    conversation: typeof record['conversation'] === 'string' ? record['conversation'].trim().slice(0, 400) : '',
   }
 }
 
@@ -321,14 +323,16 @@ export class MemoryReviewer {
         const userOps = result.user.map(content => ({ action: 'add' as const, content }))
         const memoryResult = memoryOps.length > 0 ? await store.applyOperations('memory', memoryOps, { origin: 'review' }) : undefined
         const userResult = userOps.length > 0 ? await store.applyOperations('user', userOps, { origin: 'review' }) : undefined
+        if (result.conversation !== '') await store.recordConversation(result.conversation)
 
         this.lastReviewedAt = Date.now()
         outcome = memoryResult?.staged === true || userResult?.staged === true ? 'staged' : 'ok'
         ctx.logger.info(
-          'dsh-plugin-desktop: memory review finished (%s): %d memory + %d user entries',
+          'dsh-plugin-desktop: memory review finished (%s): %d memory + %d user entries, conversation=%s',
           outcome,
           memoryOps.length,
           userOps.length,
+          result.conversation === '' ? 'none' : 'saved',
         )
       } finally {
         clearTimeout(timer)
