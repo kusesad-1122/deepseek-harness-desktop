@@ -34,6 +34,7 @@ import type {
 } from './runtime.ts'
 import { prepareTrayIcon } from './tray-icons.ts'
 import { downloadDesktopUpdate } from './update-download.ts'
+import { showUpdateAvailableDialog, UpdateDialog } from './update-dialog.ts'
 import type { UpdateCheckResult } from './update-checker.ts'
 import { desktopWindowOptions } from './window-options.ts'
 
@@ -270,14 +271,29 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
 
   /** Ask before making the fixed download endpoint's counted request. */
   private async confirmUpdateDownload(version: string, offer?: DesktopUpdateOffer): Promise<boolean> {
-    const releaseUrl = offer?.releaseUrl ?? null
+    const fallback = offer ?? { releaseUrl: null, releaseName: null, releaseNotes: null, publishedAt: null }
+
+    // Hermes-style styled banner dialog; fall back to the native message box
+    // when the custom window cannot be constructed.
+    const action = await showUpdateAvailableDialog(this.window, PRODUCT_VERSION, version, fallback)
+    if (action === 'download') return true
+    if (action === 'notes' && fallback.releaseUrl !== null) {
+      try {
+        await shell.openExternal(fallback.releaseUrl)
+      } catch {
+        // Opening the announcement page is best-effort; the user can still download next time.
+      }
+    }
+    if (action !== null) return false
+
+    const releaseUrl = fallback.releaseUrl
     const buttons = releaseUrl === null ? ['Download', 'Later'] : ['Download', 'Release Notes', 'Later']
     const defaultId = releaseUrl === null ? 1 : 2
     const result = await dialog.showMessageBox({
       type: 'info',
       title: 'DSH Desktop Update Available',
       message: `DSH Desktop ${version} is available.`,
-      detail: offer?.releaseNotes ?? 'Download this update now?',
+      detail: fallback.releaseNotes ?? 'Download this update now?',
       buttons,
       defaultId,
       cancelId: defaultId,
@@ -343,51 +359,89 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     if (this.platform !== 'darwin' && this.platform !== 'win32') {
       throw new Error(`dsh-plugin-desktop: updates are unavailable on ${this.platform}`)
     }
-    const artifactPath = await downloadDesktopUpdate({
-      platform: this.platform,
-      version,
-      userDataPath: app.getPath('userData'),
-      request: (requestUrl, init) => net.fetch(requestUrl, init),
-      signal,
-      ...(url === undefined ? {} : { url }),
-      ...(onProgress === undefined ? {} : { onProgress }),
-    })
-    signal.throwIfAborted()
 
-    if (this.platform === 'darwin') {
-      const openError = await shell.openPath(artifactPath)
-      if (openError !== '') throw new Error(`dsh-plugin-desktop: failed to open update disk image: ${openError}`)
-      signal.throwIfAborted()
-      await dialog.showMessageBox({
-        type: 'info',
-        title: 'DSH Desktop Update Downloaded',
-        message: `DSH Desktop ${version} is ready to install.`,
-        detail: 'The disk image has opened. Replace DSH Desktop in Applications, then reopen it.',
-        buttons: ['OK'],
-        defaultId: 0,
-        noLink: true,
-      })
-      return
+    // Styled Hermes-style progress window; best-effort (falls back to tray-only).
+    let updateDialog: UpdateDialog | undefined
+    try {
+      updateDialog = new UpdateDialog(this.window)
+      await updateDialog.progress({ version, stage: '下载中', percent: 0 })
+    } catch {
+      updateDialog = undefined
     }
+    const progressOf = (received: number, total: number | null): number | null =>
+      total === null || total <= 0 ? null : Math.max(0, Math.min(100, Math.round((received / total) * 100)))
 
-    const result = await dialog.showMessageBox({
-      type: 'info',
-      title: 'DSH Desktop Update Downloaded',
-      message: `DSH Desktop ${version} is ready to install.`,
-      detail: 'Restart DSH Desktop and run the installer now?',
-      buttons: ['Restart and Install', 'Later'],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true,
-    })
-    if (result.response !== 0) return
+    try {
+      const artifactPath = await downloadDesktopUpdate({
+        platform: this.platform,
+        version,
+        userDataPath: app.getPath('userData'),
+        request: (requestUrl, init) => net.fetch(requestUrl, init),
+        signal,
+        ...(url === undefined ? {} : { url }),
+        onProgress: (received, total) => {
+          if (onProgress !== undefined) onProgress(received, total)
+          if (updateDialog !== undefined) {
+            void updateDialog.progress({ version, stage: '下载中', percent: progressOf(received, total) }).catch(() => {})
+          }
+        },
+      })
+      signal.throwIfAborted()
 
-    const spec = this.scheduled
-    if (spec === undefined) throw new Error('dsh-plugin-desktop: no active shell can exit for update installation')
-    signal.throwIfAborted()
-    await this.launchWindowsUpdateInstaller(artifactPath)
-    this.quitting = true
-    spec.requestQuit(0)
+      if (this.platform === 'darwin') {
+        const openError = await shell.openPath(artifactPath)
+        if (openError !== '') throw new Error(`dsh-plugin-desktop: failed to open update disk image: ${openError}`)
+        signal.throwIfAborted()
+        if (updateDialog !== undefined) {
+          await updateDialog.progress({ version, stage: '校验中', percent: 100 }).catch(() => {})
+        }
+        await updateDialog?.ask('done', { version }).catch(() => {})
+        await updateDialog?.close()
+        await dialog.showMessageBox({
+          type: 'info',
+          title: 'DSH Desktop Update Downloaded',
+          message: `DSH Desktop ${version} is ready to install.`,
+          detail: 'The disk image has opened. Replace DSH Desktop in Applications, then reopen it.',
+          buttons: ['OK'],
+          defaultId: 0,
+          noLink: true,
+        })
+        return
+      }
+
+      // Windows: styled "restart and install" prompt with native fallback.
+      let restart = false
+      if (updateDialog !== undefined) {
+        try {
+          await updateDialog.progress({ version, stage: '校验中', percent: 100 })
+          restart = (await updateDialog.ask('done', { version })) === 'restart'
+        } catch {
+          restart = false
+        }
+      }
+      if (!restart) {
+        const result = await dialog.showMessageBox({
+          type: 'info',
+          title: 'DSH Desktop Update Downloaded',
+          message: `DSH Desktop ${version} is ready to install.`,
+          detail: 'Restart DSH Desktop and run the installer now?',
+          buttons: ['Restart and Install', 'Later'],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        })
+        if (result.response !== 0) return
+      }
+
+      const spec = this.scheduled
+      if (spec === undefined) throw new Error('dsh-plugin-desktop: no active shell can exit for update installation')
+      signal.throwIfAborted()
+      await this.launchWindowsUpdateInstaller(artifactPath)
+      this.quitting = true
+      spec.requestQuit(0)
+    } finally {
+      updateDialog?.close()
+    }
   }
 
   /** Start the downloaded NSIS installer before releasing the current process. */
