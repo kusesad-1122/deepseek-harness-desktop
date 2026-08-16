@@ -17,10 +17,15 @@
       config:
         memoryEnabled: true
         userProfileEnabled: true
+        # Hermes write_approval gate: off by default; /memory approval on|off
+        # and the settings panel toggle it live. When on, every write (model
+        # tool AND background review) stages under memory/pending/ until the
+        # user approves it.
+        writeApproval: false
         # Hermes L4 learning loop: detached background review every N user
         # turns, one bounded LLM call, writes through the same guarded store.
         reviewEnabled: true
-        reviewInterval: 6
+        reviewInterval: 4
         reviewCooldownMs: 60000
         reviewTimeoutMs: 60000
         reviewMaxDigestChars: 8000

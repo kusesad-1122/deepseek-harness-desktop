@@ -170,7 +170,35 @@ The Desktop-owned `desktop-memory` row owns bounded cross-session memory. It rea
 
 Tool writes are durable immediately but only enter the system prompt on the next generation. Business failures (over budget, ambiguous substring match, external file drift) are returned as structured `success: false` tool values with `currentEntries`/`usage`, never as thrown tool errors.
 
-The automatic review loop listens on `agent/turn-stopping`, returns immediately, and runs one bounded `ctx.llm.stream()` call detached from the turn. It extracts a digest of recent human `user/message` events (plugin-injected messages are skipped, assistant text is capped), applies the Hermes curation policy, and commits through the same `MemoryStore` lock/drift/budget path as the model-facing tool. The auxiliary LLM call carries no `sessionId`, so review traffic never enters the user's session log. The `/memory` command reports live entries, both char budgets, and the review rhythm.
+The automatic review loop listens on `agent/turn-stopping`, returns immediately, and runs one bounded `ctx.llm.stream()` call detached from the turn. It extracts a digest of recent human `user/message` events (plugin-injected messages are skipped, assistant text is capped), applies the Hermes curation policy, and commits through the same `MemoryStore` lock/drift/budget path as the model-facing tool. The auxiliary LLM call carries no `sessionId`, so review traffic never enters the user's session log. Trivial acknowledgements ("ok", "继续"…) do not advance the rhythm.
+
+A **memory settings panel** is registered in the web UI (`settings.section`, order `35`, id `desktop-memory`). It polls `/dsh-desktop/memory/state` (entries, char budgets, pending writes, approval toggle, review status) and POSTs same-origin mutations to `/dsh-desktop/memory/approve`, `/reject`, and `/approval`. The same commands are available in chat as `/memory pending|approve <id>|reject <id>|approval on|off`.
+
+Security and robustness (Hermes `threat_patterns` strict scope, ported dependency-free in `src/threat-scan.ts`):
+
+- Writes are scanned **before** any path: a hit blocks add/replace/batch with a `success:false` result and is never staged.
+- On load, poisoned on-disk entries are degraded in the **snapshot** to `[BLOCKED: …]` while the live view keeps the original so the user can see and remove it.
+- The injected snapshot is wrapped in a `<memory-context>` fence with a System note that denies instruction authority.
+- `writeApproval` (default `false`) stages every write — including the background reviewer's — under `memory/pending/*.json`; approval replays through the same guarded store. `audit.jsonl` records staged/approved/rejected/committed/threat-blocked writes with their origin.
+- Memory files are read with fatal UTF-8 decoding (invalid bytes refuse writes instead of being replaced with U+FFFD), BOM is stripped, writes are fsynced, and a stale writer lock from a dead process is healed automatically.
+
+```yaml
+- id: desktop-memory
+  name: dsh-plugin-desktop/memory
+  config:
+    memoryEnabled: true      # inject and manage MEMORY.md
+    userProfileEnabled: true # inject and manage USER.md
+    memoryCharLimit: 2200    # hard char budget for MEMORY.md
+    userCharLimit: 1375      # hard char budget for USER.md
+    writeApproval: false     # stage writes for /memory approval when on
+    # Hermes-style L4 loop: detached one-shot review every N user turns.
+    reviewEnabled: true
+    reviewInterval: 4        # user turns between automatic reviews
+    reviewCooldownMs: 60000  # minimum wall time between reviews
+    reviewTimeoutMs: 60000   # hard timeout for one review LLM call
+    reviewMaxDigestChars: 8000
+    reviewMaxOutputTokens: 512
+```
 
 ## Internal and launcher-private capabilities
 

@@ -18,6 +18,7 @@ const defaultConfig: MemoryConfig = {
   userProfileEnabled: true,
   memoryCharLimit: 2200,
   userCharLimit: 1375,
+  writeApproval: false,
   reviewEnabled: true,
   reviewInterval: 6,
   reviewCooldownMs: 60_000,
@@ -31,6 +32,7 @@ async function makeStore(limits: Partial<Pick<MemoryConfig, 'memoryCharLimit' | 
   const store = new MemoryStore(join(root, 'memory'), {
     memoryCharLimit: limits.memoryCharLimit ?? defaultConfig.memoryCharLimit,
     userCharLimit: limits.userCharLimit ?? defaultConfig.userCharLimit,
+    writeApproval: false,
   })
   return { root, store }
 }
@@ -171,6 +173,7 @@ describe('memory Host plugin', () => {
       userProfileEnabled: true,
       memoryCharLimit: 2200,
       userCharLimit: 1375,
+      writeApproval: false,
       reviewEnabled: true,
       reviewInterval: 6,
       reviewCooldownMs: 60_000,
@@ -212,6 +215,7 @@ describe('memory Host plugin', () => {
         register: (_definition: { name: string, description: string, handler: () => unknown }) => () => {},
       },
       on: (_type: string, _listener: (payload: never) => void) => () => {},
+      inject: (_deps: string[], _callback: (host: unknown) => void) => {},
       logger: { warn: (...args: unknown[]) => { warnings.push(args) } },
       effect: (register: () => Promise<() => void>) => {
         void register().then((release) => { disposer = release })
@@ -246,6 +250,7 @@ describe('memory Host plugin', () => {
       tools: { register: (definition: ToolDefinition) => { tools.push(definition); return () => {} } },
       commands: { register: () => () => {} },
       on: () => () => {},
+      inject: () => {},
       logger: { warn: (...args: unknown[]) => { warnings.push(args) } },
       effect: (register: () => Promise<() => void>) => { void register() },
     } as unknown as Context

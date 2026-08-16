@@ -174,8 +174,32 @@ function isEnoent(error: unknown): boolean {
   return isNodeError(error) && error.code === 'ENOENT'
 }
 
+/**
+ * Trivial acknowledgements don't advance the review rhythm and don't build a
+ * digest (Hermes TRIVIAL_PROMPT_RE discipline, memory_provider.py:67-101).
+ */
+const TRIVIAL_TURN = /^(ok|okay|k|yes|no|yep|nope|sure|thanks|thank you|continue|go on|next|好的|好|嗯|可以|继续|收到|谢谢|是的|对|没问题|请继续)[!！。.,，\s]*$/i
+
+function isTrivialTurn(agent: Agent): boolean {
+  const events = [...agent.session.events]
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!
+    if (event.type !== 'user/message') continue
+    const data = event.data as DigestEventData
+    if (data.source?.kind !== 'user') continue
+    const text = textOfBlocks(data.content)
+    if (text === '') return false
+    return TRIVIAL_TURN.test(text)
+  }
+  return false
+}
+
 interface ReviewState {
+  readonly loadedAt?: string
   readonly lastReviewedAt: number
+  readonly lastRunAt?: number
+  readonly lastOutcome?: string
+  readonly lastError?: string
   readonly memoryAdded?: number
   readonly userAdded?: number
 }
@@ -188,6 +212,9 @@ export class MemoryReviewer {
   private turnsSinceReview = 0
   private running = false
   private lastReviewedAt = 0
+  private lastRunAt = 0
+  private lastOutcome = ''
+  private lastError = ''
 
   constructor(private readonly dir: string) {}
 
@@ -201,19 +228,26 @@ export class MemoryReviewer {
         this.lastReviewedAt = state.lastReviewedAt
       }
     } catch (error) {
-      if (!isEnoent(error)) {
-        // Unreadable state never blocks memory: start with a clean rhythm.
+      if (isEnoent(error)) {
+        // First boot: leave a visible marker that the memory plugin loaded and
+        // the automatic review loop is armed.
+        await this.saveState({ lastReviewedAt: 0, loadedAt: new Date().toISOString() })
       }
+      // Unreadable state never blocks memory: start with a clean rhythm.
     }
   }
 
   /**
    * Register the turn rhythm. Returns the disposer.
    * The listener returns immediately; the actual review is detached.
+   * Trivial acknowledgements ("ok", "继续"…) neither advance the rhythm nor
+   * build a digest, and a disabled memory pair never writes anything.
    */
-  attach(ctx: Context, store: MemoryStore, config: ReviewConfig): () => void {
+  attach(ctx: Context, store: MemoryStore, config: ReviewConfig & { readonly memoryEnabled?: boolean, readonly userProfileEnabled?: boolean }): () => void {
     return ctx.on('agent/turn-stopping', ({ agent }) => {
       if (!config.reviewEnabled || this.running) return
+      if (config.memoryEnabled === false && config.userProfileEnabled === false) return
+      if (isTrivialTurn(agent)) return
       this.turnsSinceReview += 1
       const due = this.turnsSinceReview >= config.reviewInterval
         && Date.now() - this.lastReviewedAt >= config.reviewCooldownMs
@@ -235,56 +269,79 @@ export class MemoryReviewer {
     return this.lastReviewedAt === 0 ? -1 : Math.floor((Date.now() - this.lastReviewedAt) / 1000)
   }
 
+  /** Live diagnostics for the memory settings panel. */
+  status(): { lastRunAt: number, lastOutcome: string, lastError: string } {
+    return { lastRunAt: this.lastRunAt, lastOutcome: this.lastOutcome, lastError: this.lastError }
+  }
+
   private async run(ctx: Context, store: MemoryStore, config: ReviewConfig, agent: Agent): Promise<void> {
-    const digest = extractReviewDigest(agent, config.reviewMaxDigestChars)
-    if (digest === '') return
-    const provider = agent.options.provider
-    const model = agent.options.model
-    if (typeof provider !== 'string' || provider === '' || typeof model !== 'string' || model === '') {
-      ctx.logger.warn('dsh-plugin-desktop: memory review skipped: agent has no provider/model route')
-      return
-    }
-
-    const controller = new AbortController()
-    const timer = setTimeout(() => {
-      controller.abort(new Error(`memory review timed out after ${String(config.reviewTimeoutMs)}ms`))
-    }, config.reviewTimeoutMs)
+    let outcome = 'ok'
+    let lastError = ''
     try {
-      const messages: Message[] = [createUserMessage({
-        content: [{ type: 'text', text: REVIEW_USER_PREFIX + digest }],
-        source: { kind: 'plugin', plugin: 'dsh-plugin-desktop-memory-review' },
-      })]
-      const options: GenerateOptions = {
-        provider,
-        model,
-        messages,
-        system: REVIEW_SYSTEM_PROMPT,
-        maxTokens: config.reviewMaxOutputTokens,
-        signal: controller.signal,
+      const digest = extractReviewDigest(agent, config.reviewMaxDigestChars)
+      if (digest === '') {
+        outcome = 'no-digest'
+        return
       }
-      const assembler = new BlockAssembler()
-      for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
-      const finish = assembler.finish
-      if (finish.kind === 'error') {
-        throw new Error(finish.failure.message)
+      const provider = agent.options.provider
+      const model = agent.options.model
+      if (typeof provider !== 'string' || provider === '' || typeof model !== 'string' || model === '') {
+        outcome = 'no-route'
+        ctx.logger.warn('dsh-plugin-desktop: memory review skipped: agent has no provider/model route')
+        return
       }
-      const text = textOfBlocks(assembler.blocks())
-      const result = parseReviewOutput(text)
 
-      const memoryOps = result.memory.map(content => ({ action: 'add' as const, content }))
-      const userOps = result.user.map(content => ({ action: 'add' as const, content }))
-      if (memoryOps.length > 0) await store.applyOperations('memory', memoryOps)
-      if (userOps.length > 0) await store.applyOperations('user', userOps)
+      const controller = new AbortController()
+      const timer = setTimeout(() => {
+        controller.abort(new Error(`memory review timed out after ${String(config.reviewTimeoutMs)}ms`))
+      }, config.reviewTimeoutMs)
+      try {
+        const messages: Message[] = [createUserMessage({
+          content: [{ type: 'text', text: REVIEW_USER_PREFIX + digest }],
+          source: { kind: 'plugin', plugin: 'dsh-plugin-desktop-memory-review' },
+        })]
+        const options: GenerateOptions = {
+          provider,
+          model,
+          messages,
+          system: REVIEW_SYSTEM_PROMPT,
+          maxTokens: config.reviewMaxOutputTokens,
+          signal: controller.signal,
+        }
+        const assembler = new BlockAssembler()
+        for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
+        const finish = assembler.finish
+        if (finish.kind === 'error') {
+          throw new Error(finish.failure.message)
+        }
+        const text = textOfBlocks(assembler.blocks())
+        const result = parseReviewOutput(text)
 
-      this.lastReviewedAt = Date.now()
-      await this.saveState({ lastReviewedAt: this.lastReviewedAt, memoryAdded: memoryOps.length, userAdded: userOps.length })
-      ctx.logger.info(
-        'dsh-plugin-desktop: memory review saved %d memory + %d user entries',
-        memoryOps.length,
-        userOps.length,
-      )
+        const memoryOps = result.memory.map(content => ({ action: 'add' as const, content }))
+        const userOps = result.user.map(content => ({ action: 'add' as const, content }))
+        const memoryResult = memoryOps.length > 0 ? await store.applyOperations('memory', memoryOps, { origin: 'review' }) : undefined
+        const userResult = userOps.length > 0 ? await store.applyOperations('user', userOps, { origin: 'review' }) : undefined
+
+        this.lastReviewedAt = Date.now()
+        outcome = memoryResult?.staged === true || userResult?.staged === true ? 'staged' : 'ok'
+        ctx.logger.info(
+          'dsh-plugin-desktop: memory review finished (%s): %d memory + %d user entries',
+          outcome,
+          memoryOps.length,
+          userOps.length,
+        )
+      } finally {
+        clearTimeout(timer)
+      }
+    } catch (error) {
+      outcome = 'error'
+      lastError = String(error)
+      ctx.logger.warn('dsh-plugin-desktop: background memory review failed: %s', lastError)
     } finally {
-      clearTimeout(timer)
+      this.lastRunAt = Date.now()
+      this.lastOutcome = outcome
+      this.lastError = lastError
+      await this.saveState({ lastReviewedAt: this.lastReviewedAt, lastRunAt: this.lastRunAt, lastOutcome: outcome, lastError })
     }
   }
 
