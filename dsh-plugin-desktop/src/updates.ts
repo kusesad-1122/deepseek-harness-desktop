@@ -1,6 +1,7 @@
 /** Cordis Host plugin for scheduled and interactive DSH Desktop updates. */
 
 import { open } from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import z from '@deepseek-ai/schemastery'
@@ -282,6 +283,51 @@ export function apply(ctx: Context, config: Config): void {
     })
     refreshTray = registration.refresh
 
+    // Web-side manual check + state routes so the sidebar "检查更新" button can
+    // trigger the same flow as the tray item.
+    ctx.inject(['webServer'], (hostCtx: Context) => {
+      const host = hostCtx as unknown as {
+        webServer: { register(route: { kind: 'exact' | 'prefix', path: string, handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void> }): () => void }
+        effect(callback: () => () => void, label: string): void
+      }
+      host.effect(() => {
+        const disposers: Array<() => void> = []
+        disposers.push(host.webServer.register({
+          kind: 'exact',
+          path: '/dsh-desktop/updates/check',
+          handler: async (request, response) => {
+            if (!sameOrigin(request)) {
+              sendJson(response, 403, { error: 'cross-origin rejected' })
+              return
+            }
+            await runManualCheck()
+            sendJson(response, 200, { ok: true })
+          },
+        }))
+        disposers.push(host.webServer.register({
+          kind: 'exact',
+          path: '/dsh-desktop/updates/state',
+          handler: (_request, response) => {
+            sendJson(response, 200, {
+              checking,
+              downloadingVersion,
+              downloadPercent,
+              available: available === undefined
+                ? null
+                : {
+                    version: available.version,
+                    releaseName: available.offer.releaseName,
+                    releaseUrl: available.offer.releaseUrl,
+                  },
+            })
+          },
+        }))
+        return () => {
+          for (const dispose of [...disposers].reverse()) dispose()
+        }
+      }, 'dsh-plugin-desktop: update http routes')
+    })
+
     if (adapter.isPackaged && config.enabled) scheduleBackgroundCheck(config.initialDelayMs)
 
     return async () => {
@@ -360,4 +406,25 @@ function releaseInfoOf(result: UpdateCheckResult): DesktopUpdateOffer {
 
 function isEnoent(value: unknown): boolean {
   return isRecord(value) && value.code === 'ENOENT'
+}
+
+/** Write a JSON payload with no-store caching. */
+function sendJson(response: ServerResponse, status: number, payload: unknown): void {
+  response.writeHead(status, {
+    'cache-control': 'no-store',
+    'content-type': 'application/json; charset=utf-8',
+  })
+  response.end(JSON.stringify(payload))
+}
+
+/** True when the request's Origin matches its Host — required on POST routes. */
+function sameOrigin(request: IncomingMessage): boolean {
+  const origin = request.headers.origin
+  const host = request.headers.host
+  if (origin === undefined || host === undefined) return false
+  try {
+    return new URL(origin).host === host
+  } catch {
+    return false
+  }
 }

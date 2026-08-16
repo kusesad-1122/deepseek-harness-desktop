@@ -206,7 +206,7 @@ function MemoryPanel(props: { t: MemoryTranslate }): ReturnType<typeof h> {
         h('div', { style: bar }, h('div', { style: { width: `${width}%`, height: '100%', background: 'var(--dsh-color-accent, #4c8bf5)' } })),
         h('div', { style: muted }, fmt(t, 'usage', { count: target.charCount, limit: target.charLimit, entries: target.entries.length })),
         target.entries.length === 0
-          ? h('div', { style: { marginTop: 8, fontSize: 12 } }, t('empty'))
+          ? h('div', { style: { marginTop: 8, fontSize: 12 } }, fmt(t, 'empty', { n: review.interval }))
           : h('ol', { style: { margin: '8px 0 0', paddingLeft: 18 } },
             ...target.entries.map(entry => h('li', { key: entry, style: { fontSize: 12, marginBottom: 4 } }, entry))),
       )
