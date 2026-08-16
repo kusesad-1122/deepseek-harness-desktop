@@ -759,46 +759,70 @@ export function apply(ctx: Context, config: Config): void {
 
     const disposers: Array<() => void> = []
     if (config.memoryEnabled || config.userProfileEnabled) {
-      const snapshot = store.snapshotText({ memory: config.memoryEnabled, user: config.userProfileEnabled })
-      if (snapshot !== '') {
-        disposers.push(ctx.systemPrompt.section({ name: 'memory', order: 300, text: snapshot }))
+      // DYNAMIC system-prompt section, always registered. The text is a
+      // function re-read at every prompt assembly, so a conversation that
+      // starts with empty memory still sees the current store once it has
+      // content — a frozen/absent section is exactly why new sessions never
+      // knew anything. Each registration is isolated so one failure cannot
+      // silently kill the others (or the review loop below).
+      try {
+        disposers.push(ctx.systemPrompt.section({
+          name: 'memory',
+          order: 300,
+          text: () => store.snapshotText({ memory: config.memoryEnabled, user: config.userProfileEnabled }),
+        }))
+      } catch (error) {
+        ctx.logger.warn('dsh-plugin-desktop: could not register memory system-prompt section: %s', String(error))
       }
-      disposers.push(ctx.tools.register(defineTool({
-        name: 'memory',
-        description: TOOL_DESCRIPTION,
-        parameters: MEMORY_TOOL_PARAMETERS,
-        output: {
-          schema: MEMORY_OUTPUT_SCHEMA,
-          render: (_args, value) => [{
-            type: 'text',
-            text: value.success ? `${value.target}: ${value.message ?? 'Memory updated.'}` : (value.error ?? 'Memory write failed.'),
-          }],
-        },
-        execute: (args: unknown, _exec) => {
-          const input = args as MemoryToolArguments
-          const target = normalizeTarget(input.target)
-          return store.applyOperations(target, normalizeOperations(input), { origin: 'foreground' })
-        },
-        presentCall: args => ({
-          card: 'generic',
-          title: 'Update memory',
-          kind: 'other',
-          rawInput: (args as { operations?: unknown, action?: unknown }).operations ?? (args as { action?: unknown }).action,
-        }),
-      })))
-      disposers.push(ctx.commands.register({
-        name: 'memory',
-        description: 'Show memory, pending writes, approval control, and review state',
-        input: { hint: 'pending | approve <id> | reject <id> | approval on|off' },
-        handler: async (invocation: CommandInvocation) => handleMemoryCommand(store, reviewer, config, invocation.rawInput),
-      }))
+      try {
+        disposers.push(ctx.tools.register(defineTool({
+          name: 'memory',
+          description: TOOL_DESCRIPTION,
+          parameters: MEMORY_TOOL_PARAMETERS,
+          output: {
+            schema: MEMORY_OUTPUT_SCHEMA,
+            render: (_args, value) => [{
+              type: 'text',
+              text: value.success ? `${value.target}: ${value.message ?? 'Memory updated.'}` : (value.error ?? 'Memory write failed.'),
+            }],
+          },
+          execute: (args: unknown, _exec) => {
+            const input = args as MemoryToolArguments
+            const target = normalizeTarget(input.target)
+            return store.applyOperations(target, normalizeOperations(input), { origin: 'foreground' })
+          },
+          presentCall: args => ({
+            card: 'generic',
+            title: 'Update memory',
+            kind: 'other',
+            rawInput: (args as { operations?: unknown, action?: unknown }).operations ?? (args as { action?: unknown }).action,
+          }),
+        })))
+      } catch (error) {
+        ctx.logger.warn('dsh-plugin-desktop: could not register memory tool: %s', String(error))
+      }
+      try {
+        disposers.push(ctx.commands.register({
+          name: 'memory',
+          description: 'Show memory, pending writes, approval control, and review state',
+          input: { hint: 'pending | approve <id> | reject <id> | approval on|off' },
+          handler: async (invocation: CommandInvocation) => handleMemoryCommand(store, reviewer, config, invocation.rawInput),
+        }))
+      } catch (error) {
+        ctx.logger.warn('dsh-plugin-desktop: could not register /memory command: %s', String(error))
+      }
     }
 
     // Hermes L4 learning loop: every N user turns, a detached one-shot review
-    // curates durable entries through the same guarded store path. The review
-    // never runs when both memory stores are disabled.
+    // curates durable entries through the same guarded store path. Attach is
+    // attempted unconditionally (when enabled) so a failure in any of the
+    // registrations above can never silently disable the automatic review.
     if (config.reviewEnabled && (config.memoryEnabled || config.userProfileEnabled)) {
-      disposers.push(reviewer.attach(ctx, store, config))
+      try {
+        disposers.push(reviewer.attach(ctx, store, config))
+      } catch (error) {
+        ctx.logger.warn('dsh-plugin-desktop: could not attach memory review loop: %s', String(error))
+      }
     }
 
     return () => {
