@@ -63,3 +63,32 @@ export function installAdvancedStyles(): () => void {
   document.head.appendChild(style)
   return () => { style.remove() }
 }
+
+/**
+ * Compatibility-shell stylesheet for the left extended dock. The dock is a
+ * viewport-anchored fixed column registered into the upstream `shell.overlay`
+ * layer; the app is pushed right by the dock width through a `#root`
+ * margin-left owned by the dock effect (fixed children ignore ancestor
+ * margins, so the dock never moves with the app).
+ */
+const COMPATIBILITY_STYLES = `
+.dshDesktopCompatDock {
+  position: fixed; left: 0; top: 0; bottom: 0; z-index: 1000;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-sizing: border-box;
+  background: var(--dsw-alias-bg-base);
+  border-right: 1px solid var(--dsw-alias-border-l1);
+}
+body[data-dsh-desktop-mode="compatibility"] #root { transition: margin-left var(--ds-transition-duration-slow, 180ms) ease; }
+@media (prefers-reduced-motion: reduce) { body[data-dsh-desktop-mode="compatibility"] #root { transition: none !important; } }
+`
+
+/** Install and remove the compatibility shell's left-dock styles. @returns the style disposer. */
+export function installCompatibilityStyles(): () => void {
+  const style = document.createElement('style')
+  style.dataset.plugin = 'dsh-plugin-desktop'
+  style.dataset.pluginCss = 'dsh-plugin-desktop/compatibility-shell'
+  style.textContent = COMPATIBILITY_STYLES
+  document.head.appendChild(style)
+  return () => { style.remove() }
+}

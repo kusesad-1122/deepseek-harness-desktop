@@ -6,7 +6,7 @@ import {
   computeDesktopColumns, computeDesktopColumnsExtended, DesktopLayoutState,
   EXTENDED_COLLAPSED, EXTENDED_DEFAULT, MACOS_SIDEBAR_COLLAPSED, SIDEBAR_COLLAPSED,
 } from '../src/client/layout-state.ts'
-import { installAdvancedStyles } from '../src/client/styles.ts'
+import { installAdvancedStyles, installCompatibilityStyles } from '../src/client/styles.ts'
 import {
   MACOS_DRAG_REGION_HEIGHT,
   MACOS_TITLEBAR_HEIGHT,
@@ -75,6 +75,35 @@ describe('advanced desktop layout', () => {
       expect(css).toMatch(/\.dshDesktopWindowsCaptionRow \{[^}]*grid-column: 2 \/ -1;[^}]*grid-row: 1;/)
       expect(css).toMatch(new RegExp(`\\.dshDesktopWindowsCaptionRow::before \\{[^}]*inset: 0 ${WINDOWS_CAPTION_CONTROLS_WIDTH}px 0 0;[^}]*-webkit-app-region: drag;`))
       expect(css).not.toMatch(/data-desktop-platform="win32"[^{}]*header[^{}]*\{[^}]*padding-right/)
+      expect(appendChild).toHaveBeenCalledWith(style)
+      dispose()
+      expect(remove).toHaveBeenCalledOnce()
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('installs and removes the compatibility left-dock stylesheet', () => {
+    let css = ''
+    const remove = vi.fn()
+    const style = {
+      dataset: {},
+      get textContent() { return css },
+      set textContent(value: string) { css = value },
+      remove,
+    }
+    const appendChild = vi.fn()
+    vi.stubGlobal('document', {
+      createElement: () => style,
+      head: { appendChild },
+    })
+
+    try {
+      const dispose = installCompatibilityStyles()
+      expect(css).toMatch(/\.dshDesktopCompatDock\s*\{[^}]*position:\s*fixed;[^}]*left:\s*0;[^}]*top:\s*0;[^}]*bottom:\s*0;[^}]*z-index:\s*1000;/)
+      expect(css).toMatch(/body\[data-dsh-desktop-mode="compatibility"\]\s*#root\s*\{\s*transition:\s*margin-left/)
+      expect(css).not.toContain('dshDesktopFrame')
       expect(appendChild).toHaveBeenCalledWith(style)
       dispose()
       expect(remove).toHaveBeenCalledOnce()
