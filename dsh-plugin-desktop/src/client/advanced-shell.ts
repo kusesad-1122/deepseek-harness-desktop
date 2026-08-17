@@ -1,4 +1,5 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from './contracts.ts'
 import type { DesktopClientEnvironment } from './environment.ts'
@@ -7,6 +8,8 @@ import { DesktopLayoutState } from './layout-state.ts'
 import { provideDesktopLayout } from './layout-service.ts'
 import { installAdvancedStyles } from './styles.ts'
 import { DesktopThemePresenter } from './theme-presenter.ts'
+import { EXTENDED_NS } from './extended-locales.ts'
+import { ExtendedPanel, type ExtendedTranslate } from './extended-panel.tsx'
 
 /**
  * Provide the advanced layout service and own the desktop root slot.
@@ -48,6 +51,7 @@ export function applyAdvancedShell(ctx: ClientContext, environment: DesktopClien
   ctx.effect(() => ctx.slots.register({
     name: 'root',
     children: {
+      'panel.extended': { kind: 'single', scope: 'root' },
       'sidebar': { kind: 'single', scope: 'root' },
       'conversation': { kind: 'single', scope: 'session-maybe' },
       'details': { kind: 'single', scope: 'session' },
@@ -55,4 +59,20 @@ export function applyAdvancedShell(ctx: ClientContext, environment: DesktopClien
     },
     inject: () => ({ layout: desktopLayout, platform: environment.platform }),
   }, AdvancedFrame), 'desktop: advanced root slot')
+
+  // The left extended panel lives inside the desktop root frame: the root
+  // registration above declares its slot, and this effect registers the panel
+  // entry into it once the declaration is committed. The layout instance and
+  // the sessions feed come from the same advanced scope.
+  ctx.effect(() => {
+    const extendedT = (ctx.locale as unknown as { bind(ns: string): ExtendedTranslate }).bind(EXTENDED_NS)
+    return ctx.slots.inject('panel.extended', () => ctx.slots.register({
+      name: 'panel.extended',
+      inject: () => ({
+        t: extendedT,
+        layout: desktopLayout,
+        openSession: (id: SessionId) => { ctx.sessions.open(id) },
+      }),
+    }, ExtendedPanel))
+  }, 'desktop: extended panel')
 }
