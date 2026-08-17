@@ -5,12 +5,14 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+import type {} from './contracts.ts'
 import { applyAdvancedShell } from './advanced-shell.ts'
 import { parseDesktopClientEnvironment } from './environment.ts'
 import { en, zh } from './memory-locales.ts'
 import { MemoryPanel, type MemoryTranslate } from './memory-section.tsx'
 import { AboutPanel, type AboutTranslate } from './about-section.tsx'
 import { en as aboutEn, zh as aboutZh } from './about-locales.ts'
+import { EXTENDED_NS, en as extendedEn, zh as extendedZh } from './extended-locales.ts'
 
 export { applyAdvancedShell } from './advanced-shell.ts'
 export { parseDesktopClientEnvironment } from './environment.ts'
@@ -43,6 +45,7 @@ export function apply(ctx: ClientContext): void {
   const slots = ctx.slots as unknown as MemorySlotsService
   locale.register(MEMORY_NS, { zh, en })
   locale.register(ABOUT_NS, { zh: aboutZh, en: aboutEn })
+  locale.register(EXTENDED_NS, { zh: extendedZh, en: extendedEn })
   const t = locale.bind(MEMORY_NS)
   const aboutT = locale.bind(ABOUT_NS) as AboutTranslate
 

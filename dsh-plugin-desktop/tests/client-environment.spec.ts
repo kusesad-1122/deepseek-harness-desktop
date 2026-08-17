@@ -3,7 +3,8 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { provideDesktopLayout } from '../src/client/layout-service.ts'
 import { parseDesktopClientEnvironment } from '../src/client/environment.ts'
 import {
-  computeDesktopColumns, DesktopLayoutState, MACOS_SIDEBAR_COLLAPSED, SIDEBAR_COLLAPSED,
+  computeDesktopColumns, computeDesktopColumnsExtended, DesktopLayoutState,
+  EXTENDED_COLLAPSED, EXTENDED_DEFAULT, MACOS_SIDEBAR_COLLAPSED, SIDEBAR_COLLAPSED,
 } from '../src/client/layout-state.ts'
 import { installAdvancedStyles } from '../src/client/styles.ts'
 import {
@@ -109,6 +110,27 @@ describe('advanced desktop layout', () => {
     expect(MACOS_SIDEBAR_COLLAPSED).toBe(90)
   })
 
+  it('keeps the extended panel and center floor before giving up side surfaces', () => {
+    // Wide viewport: extended + sidebar + details all fit beside the center floor.
+    expect(computeDesktopColumnsExtended(1440, EXTENDED_DEFAULT, 0, 360))
+      .toEqual({ extended: EXTENDED_DEFAULT, sidebar: SIDEBAR_COLLAPSED, center: 1440 - EXTENDED_DEFAULT - SIDEBAR_COLLAPSED - 360, details: 360 })
+    // Details shrink to their floor before anything else gives.
+    expect(computeDesktopColumnsExtended(1520, EXTENDED_DEFAULT, 280, 360))
+      .toEqual({ extended: EXTENDED_DEFAULT, sidebar: 280, center: 640, details: 300 })
+    // Then details drop entirely, keeping the extended panel at its preference.
+    expect(computeDesktopColumnsExtended(1240, EXTENDED_DEFAULT, 280, 360))
+      .toEqual({ extended: EXTENDED_DEFAULT, sidebar: 280, center: 640, details: 0 })
+    // Then the extended panel shrinks toward its floor.
+    expect(computeDesktopColumnsExtended(1200, EXTENDED_DEFAULT, 280, 0))
+      .toEqual({ extended: 280, sidebar: 280, center: 640, details: 0 })
+    // Then the extended panel drops to the compact rail.
+    expect(computeDesktopColumnsExtended(1000, EXTENDED_DEFAULT, 280, 0))
+      .toEqual({ extended: EXTENDED_COLLAPSED, sidebar: 280, center: 1000 - 280 - EXTENDED_COLLAPSED, details: 0 })
+    // Finally the rail goes away rather than squeezing the conversation below its floor.
+    expect(computeDesktopColumnsExtended(760, EXTENDED_DEFAULT, 280, 0))
+      .toEqual({ extended: 0, sidebar: 280, center: 480, details: 0 })
+  })
+
   it('publishes mirrored panel transitions', () => {
     const layout = new DesktopLayoutState()
     const snapshots: object[] = []
@@ -117,10 +139,25 @@ describe('advanced desktop layout', () => {
     layout.openDetails()
     layout.closeDetails()
     expect(snapshots).toEqual([
-      { sidebar: 0, details: 0, narrow: false, narrowExpanded: false },
-      { sidebar: 0, details: 360, narrow: false, narrowExpanded: false },
-      { sidebar: 0, details: 0, narrow: false, narrowExpanded: false },
+      { sidebar: 0, details: 0, extended: EXTENDED_DEFAULT, narrow: false, narrowExpanded: false },
+      { sidebar: 0, details: 360, extended: EXTENDED_DEFAULT, narrow: false, narrowExpanded: false },
+      { sidebar: 0, details: 0, extended: EXTENDED_DEFAULT, narrow: false, narrowExpanded: false },
     ])
+  })
+
+  it('toggles and clamps the extended panel preference', () => {
+    const layout = new DesktopLayoutState()
+    expect(layout.getSnapshot().extended).toBe(EXTENDED_DEFAULT)
+    layout.toggleExtended()
+    expect(layout.getSnapshot().extended).toBe(0)
+    layout.openExtended()
+    expect(layout.getSnapshot().extended).toBe(EXTENDED_DEFAULT)
+    layout.toggleExtended()
+    expect(layout.getSnapshot().extended).toBe(0)
+    layout.setExtended(1000)
+    expect(layout.getSnapshot().extended).toBe(440)
+    layout.setExtended(10)
+    expect(layout.getSnapshot().extended).toBe(264)
   })
 
   it('lets the rail re-expand without losing its wide preference on narrow windows', () => {

@@ -30,6 +30,31 @@
         reviewTimeoutMs: 60000
         reviewMaxDigestChars: 8000
         reviewMaxOutputTokens: 512
+    - id: desktop-knowledge
+      name: dsh-plugin-desktop/knowledge
+      config:
+        # Structured knowledge cards ("structured B"): the durable, structured
+        # counterpart of MEMORY.md/USER.md. /distill 沉淀 the current session
+        # into cards; the harness auto-retrieves relevant cards per turn.
+        enabled: true
+        maxCards: 500
+        titleCharLimit: 80
+        cardCharLimit: 600
+        maxTags: 8
+        tagCharLimit: 24
+        retrieveTopK: 4
+        autoRetrieval: true
+    # Harness-side knowledge bundle: the `knowledge` tool plus auto-retrieval
+    # prompt injection, mounted beside the memory-web bundle.
+    - id: knowledge-web
+      name: dsh-plugin-desktop/knowledge-web
+    - id: desktop-reasoning-default
+      name: dsh-plugin-desktop/reasoning-default
+      # App-layer global reasoning-effort default. The level and on/off live in
+      # the `dsh-desktop-reasoning` settings namespace (defaults: enabled,
+      # defaultEffort high). Requests that resolved no effort inherit it only
+      # when the exact model supports the level; an explicit per-model choice
+      # always wins.
     - id: desktop-updates
       name: dsh-plugin-desktop/updates
       config:

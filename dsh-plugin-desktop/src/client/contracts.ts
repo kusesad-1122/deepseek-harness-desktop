@@ -6,10 +6,22 @@ export interface DesktopSidebarOwnerProps {
   width: number
 }
 
+/** Geometry passed to the left extended panel by the desktop root slot. */
+export interface DesktopExtendedOwnerProps {
+  /** Whether the extended panel is showing its compact rail. */
+  collapsed: boolean
+  /** Current rendered extended-panel width. */
+  width: number
+}
+
 /** Public panel transitions consumed by conversation and sidebar plugins. */
 export interface DesktopLayoutService {
   /** Toggle the sidebar between wide and compact presentation. */
   toggleSidebar(): void
+  /** Toggle the left extended panel between wide and compact presentation. */
+  toggleExtended(): void
+  /** Open the left extended panel at its default width (no-op when open). */
+  openExtended(): void
   /** Open the current session's details panel. */
   openDetails(): void
   /** Close the details panel. */
@@ -27,6 +39,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     /** Upstream sidebar hosted by the desktop advanced frame. */
     'sidebar': { kind: 'single'; scope: 'root'; owner: DesktopSidebarOwnerProps }
+    /** Desktop-owned left extended panel outside the upstream sidebar. */
+    'panel.extended': { kind: 'single'; scope: 'root'; owner: DesktopExtendedOwnerProps }
     /** Unchanged upstream conversation surface. */
     'conversation': { kind: 'single'; scope: 'session-maybe'; owner: Record<never, never> }
     /** Unchanged upstream details surface. */

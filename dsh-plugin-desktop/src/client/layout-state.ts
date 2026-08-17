@@ -4,13 +4,15 @@ export interface DesktopLayoutSnapshot {
   sidebar: number
   /** Preferred details width; zero means closed. */
   details: number
+  /** Preferred extended-panel width; zero means the compact rail. */
+  extended: number
   /** Whether the current viewport is below the automatic-collapse breakpoint. */
   narrow: boolean
   /** Manual narrow-screen override that temporarily expands the rail. */
   narrowExpanded: boolean
 }
 
-/** Column geometry after preserving the center surface. */
+/** Column geometry after preserving the center surface (extended absent = closed). */
 export interface DesktopColumns {
   /** Rendered sidebar width. */
   sidebar: number
@@ -18,6 +20,12 @@ export interface DesktopColumns {
   center: number
   /** Rendered details width. */
   details: number
+}
+
+/** Column geometry of the four-pane desktop layout. */
+export interface DesktopColumnsExtended extends DesktopColumns {
+  /** Rendered extended-panel width; the compact rail when closed. */
+  extended: number
 }
 
 /** Compatibility-mode compact rail used by the upstream Windows sidebar. */
@@ -32,6 +40,11 @@ export const DETAILS_DEFAULT = 360
 export const DETAILS_MIN = 300
 export const DETAILS_MAX = 520
 export const CENTER_MIN = 640
+/** Compact rail used while the left extended panel is closed. */
+export const EXTENDED_COLLAPSED = 56
+export const EXTENDED_DEFAULT = 300
+export const EXTENDED_MIN = 264
+export const EXTENDED_MAX = 440
 
 /**
  * Resolve three desktop columns without allowing details to squeeze the conversation below its floor.
@@ -58,6 +71,55 @@ export function computeDesktopColumns(
   return { sidebar: sidebarWidth, center: Math.max(0, viewport - sidebarWidth), details: 0 }
 }
 
+/**
+ * Resolve the four desktop columns (extended panel, sidebar, conversation,
+ * details) without letting the right-side panels squeeze the conversation
+ * below its floor. The cascade frees space in this order: shrink details,
+ * drop details, shrink the extended panel, drop it to the compact rail, and
+ * finally close it before shrinking the center below its floor.
+ * @param viewport - available frame width.
+ * @param extended - extended-panel preference, where zero selects the compact rail.
+ * @param sidebar - sidebar preference, where zero selects the compact rail.
+ * @param details - details preference, where zero closes the panel.
+ * @returns rendered column widths.
+ */
+export function computeDesktopColumnsExtended(
+  viewport: number,
+  extended: number,
+  sidebar: number,
+  details: number,
+  collapsedWidth: number = SIDEBAR_COLLAPSED,
+): DesktopColumnsExtended {
+  const extendedWidth = extended === 0 ? EXTENDED_COLLAPSED : clamp(extended, EXTENDED_MIN, EXTENDED_MAX)
+  const sidebarWidth = sidebar === 0 ? collapsedWidth : clamp(sidebar, SIDEBAR_MIN, SIDEBAR_MAX)
+  const preferredDetails = details === 0 ? 0 : clamp(details, DETAILS_MIN, DETAILS_MAX)
+  if (extendedWidth + sidebarWidth + preferredDetails + CENTER_MIN <= viewport) {
+    return {
+      extended: extendedWidth,
+      sidebar: sidebarWidth,
+      center: viewport - extendedWidth - sidebarWidth - preferredDetails,
+      details: preferredDetails,
+    }
+  }
+  const reducedDetails = preferredDetails === 0 ? 0 : Math.max(DETAILS_MIN, viewport - extendedWidth - sidebarWidth - CENTER_MIN)
+  if (extendedWidth + sidebarWidth + reducedDetails + CENTER_MIN <= viewport) {
+    return { extended: extendedWidth, sidebar: sidebarWidth, center: CENTER_MIN, details: reducedDetails }
+  }
+  const shrunkExtended = Math.min(extendedWidth, Math.max(EXTENDED_MIN, viewport - sidebarWidth - CENTER_MIN))
+  if (extendedWidth > EXTENDED_MIN && sidebarWidth + shrunkExtended + CENTER_MIN <= viewport) {
+    return { extended: shrunkExtended, sidebar: sidebarWidth, center: CENTER_MIN, details: 0 }
+  }
+  if (sidebarWidth + EXTENDED_COLLAPSED + CENTER_MIN <= viewport) {
+    return {
+      extended: EXTENDED_COLLAPSED,
+      sidebar: sidebarWidth,
+      center: viewport - sidebarWidth - EXTENDED_COLLAPSED,
+      details: 0,
+    }
+  }
+  return { extended: 0, sidebar: sidebarWidth, center: Math.max(0, viewport - sidebarWidth), details: 0 }
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value)))
 }
@@ -67,6 +129,7 @@ export class DesktopLayoutState {
   private snapshot: DesktopLayoutSnapshot = Object.freeze({
     sidebar: SIDEBAR_DEFAULT,
     details: 0,
+    extended: EXTENDED_DEFAULT,
     narrow: false,
     narrowExpanded: false,
   })
@@ -92,6 +155,16 @@ export class DesktopLayoutState {
     this.publish({ ...this.snapshot, sidebar: this.snapshot.sidebar === 0 ? SIDEBAR_DEFAULT : 0 })
   }
 
+  /** Toggle the left extended panel between its default width and the compact rail. */
+  toggleExtended(): void {
+    this.publish({ ...this.snapshot, extended: this.snapshot.extended === 0 ? EXTENDED_DEFAULT : 0 })
+  }
+
+  /** Open the extended panel at its default width; no-op when already open. */
+  openExtended(): void {
+    if (this.snapshot.extended === 0) this.publish({ ...this.snapshot, extended: EXTENDED_DEFAULT })
+  }
+
   /** @param narrow - whether the frame is below the automatic-collapse breakpoint. */
   setNarrow(narrow: boolean): void {
     if (this.snapshot.narrow === narrow) return
@@ -111,6 +184,11 @@ export class DesktopLayoutState {
   /** @param width - requested sidebar width from a resize gesture. */
   setSidebar(width: number): void {
     this.publish({ ...this.snapshot, sidebar: clamp(width, SIDEBAR_MIN, SIDEBAR_MAX) })
+  }
+
+  /** @param width - requested extended-panel width from a resize gesture. */
+  setExtended(width: number): void {
+    this.publish({ ...this.snapshot, extended: clamp(width, EXTENDED_MIN, EXTENDED_MAX) })
   }
 
   /** @param width - requested details width from a resize gesture. */

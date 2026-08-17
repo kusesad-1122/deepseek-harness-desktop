@@ -3,8 +3,8 @@ import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-
 import type {} from './contracts.ts'
 import type { DesktopClientPlatform } from './environment.ts'
 import {
-  computeDesktopColumns, DesktopLayoutState, MACOS_SIDEBAR_COLLAPSED,
-  SIDEBAR_AUTO_COLLAPSE, SIDEBAR_COLLAPSED, SIDEBAR_DEFAULT,
+  computeDesktopColumnsExtended, DesktopLayoutState, EXTENDED_COLLAPSED,
+  MACOS_SIDEBAR_COLLAPSED, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_COLLAPSED, SIDEBAR_DEFAULT,
 } from './layout-state.ts'
 
 /** Private values assembled by the advanced-shell registration. */
@@ -17,7 +17,7 @@ export interface AdvancedFrameInjected {
 
 /** Full advanced root slot props. */
 export type AdvancedFrameProps = PropsRuntime<'root'>
-  & PropsRenderSlots<'sidebar' | 'conversation' | 'details' | 'shell.overlay'>
+  & PropsRenderSlots<'panel.extended' | 'sidebar' | 'conversation' | 'details' | 'shell.overlay'>
   & AdvancedFrameInjected
 
 /** Desktop-owned transparent frame around the unchanged product surfaces. */
@@ -55,12 +55,16 @@ export function AdvancedFrame({ layout, platform, renderSlot, useSessions }: Adv
 
   const collapsed = panels.narrow ? !panels.narrowExpanded : panels.sidebar === 0
   const sidebarPreference = collapsed ? 0 : panels.sidebar === 0 ? SIDEBAR_DEFAULT : panels.sidebar
-  const columns = computeDesktopColumns(
+  const columns = computeDesktopColumnsExtended(
     viewport,
+    panels.extended,
     sidebarPreference,
     detailsSession === undefined ? 0 : panels.details,
     platform === 'darwin' ? MACOS_SIDEBAR_COLLAPSED : SIDEBAR_COLLAPSED,
   )
+  // The panel collapses whenever it renders the compact rail — either because
+  // the user folded it or because the viewport squeezed it to the rail.
+  const extendedCollapsed = columns.extended <= EXTENDED_COLLAPSED
 
   return (
     <div
@@ -68,10 +72,16 @@ export function AdvancedFrame({ layout, platform, renderSlot, useSessions }: Adv
       className="dshDesktopFrame"
       data-desktop-platform={platform}
       data-sidebar-collapsed={collapsed || undefined}
-      style={{ gridTemplateColumns: `${columns.sidebar}px minmax(0, 1fr) ${columns.details}px` }}
+      data-extended-collapsed={extendedCollapsed || undefined}
+      style={{ gridTemplateColumns: `${columns.extended}px ${columns.sidebar}px minmax(0, 1fr) ${columns.details}px` }}
     >
       {platform === 'darwin' && <div className="dshDesktopMacCaptionRow" aria-hidden="true" />}
       {platform === 'win32' && <div className="dshDesktopWindowsCaptionRow" aria-hidden="true" />}
+      <aside className="dshDesktopExtendedSurface">
+        <div className="dshDesktopExtendedPanel">
+          {renderSlot('panel.extended', { collapsed: extendedCollapsed, width: columns.extended })}
+        </div>
+      </aside>
       <aside className="dshDesktopSidebarSurface">
         <div className="dshDesktopUpstreamSidebar">
           {renderSlot('sidebar', { collapsed, width: columns.sidebar })}
@@ -82,10 +92,18 @@ export function AdvancedFrame({ layout, platform, renderSlot, useSessions }: Adv
       <div className="dshDesktopOverlay" data-shell-overlay>
         {renderSlot('shell.overlay', {})}
       </div>
+      {!extendedCollapsed && (
+        <ResizeHandle
+          side="extended"
+          left={columns.extended}
+          size={columns.extended}
+          onResize={(width) => { layout.setExtended(width) }}
+        />
+      )}
       {!collapsed && (
         <ResizeHandle
           side="sidebar"
-          left={columns.sidebar}
+          left={columns.extended + columns.sidebar}
           size={columns.sidebar}
           onResize={(width) => { layout.setSidebar(width) }}
         />
@@ -102,7 +120,7 @@ export function AdvancedFrame({ layout, platform, renderSlot, useSessions }: Adv
   )
 }
 
-function ResizeHandle(props: { side: 'sidebar' | 'details'; left: number; size: number; onResize: (width: number) => void }) {
+function ResizeHandle(props: { side: 'extended' | 'sidebar' | 'details'; left: number; size: number; onResize: (width: number) => void }) {
   const origin = useRef(0)
   const base = useRef(0)
   const onPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -113,7 +131,8 @@ function ResizeHandle(props: { side: 'sidebar' | 'details'; left: number; size: 
   const onPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
     const delta = event.clientX - origin.current
-    props.onResize(base.current + (props.side === 'sidebar' ? delta : -delta))
+    const sign = props.side === 'details' ? -1 : 1
+    props.onResize(base.current + sign * delta)
   }, [props])
   return (
     <div
