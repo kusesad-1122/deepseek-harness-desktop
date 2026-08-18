@@ -27,7 +27,30 @@ export const KNOWLEDGE_RETRIEVE_ROUTE = '/dsh-desktop/knowledge/retrieve'
 export const KNOWLEDGE_CARDS_ROUTE = '/dsh-desktop/knowledge/cards'
 export const KNOWLEDGE_UPDATE_ROUTE = '/dsh-desktop/knowledge/cards/update'
 export const KNOWLEDGE_DELETE_ROUTE = '/dsh-desktop/knowledge/cards/delete'
-export const KNOWLEDGE_NEWS_ROUTE = '/dsh-desktop/knowledge/news'
+export const DAILY_NEWS_ROUTE = '/dsh-desktop/news/daily'
+export const LEGACY_KNOWLEDGE_NEWS_ROUTE = '/dsh-desktop/knowledge/news'
+
+const DAILY_NEWS_SOURCE_API = 'https://60s.viki.moe/v2/60s'
+const DAILY_NEWS_SOURCE_NAME = '每天60秒读懂世界'
+const DAILY_NEWS_CACHE_MS = 15 * 60 * 1000
+
+export interface DailyNewsItem {
+  readonly id: string
+  readonly title: string
+  readonly url?: string
+  readonly publishedAt: string
+}
+
+export interface DailyNewsFeed {
+  readonly date: string
+  readonly source: string
+  readonly sourceUrl: string
+  readonly items: readonly DailyNewsItem[]
+}
+
+export type DailyNewsLoader = (forceRefresh: boolean) => Promise<DailyNewsFeed>
+
+let dailyNewsCache: { readonly expiresAt: number, readonly feed: DailyNewsFeed } | undefined
 
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {
   response.writeHead(status, {
@@ -85,10 +108,68 @@ function normalizeCardInput(body: unknown): { title: string, summary: string, ta
   return { title, summary, tags }
 }
 
+/** Parse the bounded public daily-news response without trusting its fields. */
+export function parseDailyNewsPayload(input: unknown): DailyNewsFeed {
+  if (typeof input !== 'object' || input === null) throw new Error('daily news response is not an object')
+  const root = input as Record<string, unknown>
+  const data = root.data
+  if (root.code !== 200 || typeof data !== 'object' || data === null) {
+    throw new Error('daily news source did not return success')
+  }
+  const record = data as Record<string, unknown>
+  const date = typeof record.date === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(record.date)
+    ? record.date
+    : new Date().toISOString().slice(0, 10)
+  const sourceUrl = typeof record.link === 'string' && record.link.startsWith('https://')
+    ? record.link
+    : 'https://github.com/vikiboss/60s'
+  const publishedAt = `${date}T00:00:00.000Z`
+  const news = Array.isArray(record.news)
+    ? record.news.filter((item): item is string => typeof item === 'string' && item.trim() !== '').slice(0, 20)
+    : []
+  if (news.length === 0) throw new Error('daily news source returned no headlines')
+  return {
+    date,
+    source: DAILY_NEWS_SOURCE_NAME,
+    sourceUrl,
+    items: news.map((title, index) => ({
+      id: `${date}-${String(index + 1)}`,
+      title: title.trim(),
+      url: sourceUrl,
+      publishedAt,
+    })),
+  }
+}
+
+/** Load and cache the fixed daily-hot-news feed; stale cache survives a transient source failure. */
+export async function loadDailyNews(forceRefresh = false): Promise<DailyNewsFeed> {
+  const now = Date.now()
+  if (!forceRefresh && dailyNewsCache !== undefined && dailyNewsCache.expiresAt > now) {
+    return dailyNewsCache.feed
+  }
+  try {
+    const response = await fetch(DAILY_NEWS_SOURCE_API, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (!response.ok) throw new Error(`daily news source returned ${String(response.status)}`)
+    const feed = parseDailyNewsPayload(await response.json())
+    dailyNewsCache = { expiresAt: now + DAILY_NEWS_CACHE_MS, feed }
+    return feed
+  } catch (error) {
+    if (dailyNewsCache !== undefined) return dailyNewsCache.feed
+    throw error
+  }
+}
 /**
  * Mount every knowledge route. Mutations require a same-origin Origin header.
  */
-export function mountKnowledgeRoutes(host: KnowledgeHost, store: KnowledgeStore, config: Config): () => void {
+export function mountKnowledgeRoutes(
+  host: KnowledgeHost,
+  store: KnowledgeStore,
+  config: Config,
+  dailyNews: DailyNewsLoader = loadDailyNews,
+): () => void {
   const disposers: Array<() => void> = []
   disposers.push(host.webServer.register({
     kind: 'exact',
@@ -132,26 +213,17 @@ export function mountKnowledgeRoutes(host: KnowledgeHost, store: KnowledgeStore,
       })
     },
   }))
-  disposers.push(host.webServer.register({
-    kind: 'exact',
-    path: KNOWLEDGE_NEWS_ROUTE,
-    handler: async (request, response) => {
-      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-      const limit = intParam(url, 'limit', 8, 20)
-      const latest = store
-        .allCards()
-        .slice()
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-        .slice(0, limit)
-      const items = latest.map((card) => ({
-        id: card.id,
-        title: card.title,
-        summary: card.summary,
-        publishedAt: card.updatedAt,
-      }))
-      sendJson(response, 200, { items })
-    },
-  }))
+  const handleDailyNews = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    try {
+      sendJson(response, 200, await dailyNews(url.searchParams.get('refresh') === '1'))
+    } catch (error) {
+      sendJson(response, 502, { error: String(error) })
+    }
+  }
+  for (const path of [DAILY_NEWS_ROUTE, LEGACY_KNOWLEDGE_NEWS_ROUTE]) {
+    disposers.push(host.webServer.register({ kind: 'exact', path, handler: handleDailyNews }))
+  }
   disposers.push(host.webServer.register({
     kind: 'exact',
     path: KNOWLEDGE_CARDS_ROUTE,

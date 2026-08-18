@@ -1,13 +1,7 @@
 /**
- * Left extended panel (advanced mode only): a vertical stack of four desktop
- * sections rendered OUTSIDE the upstream sidebar — 对话 (recent sessions),
- * 知识卡 (knowledge base: list/detail/delete/search), 新闻与知识图谱 (news
- * items plus a tag-derived card graph), and 专家风格模式 (local style picker).
- *
- * Owned by the desktop advanced root: the frame declares the `panel.extended`
- * child slot and this component registers into it. Toggling the panel between
- * the compact rail and its wide column rides DesktopLayoutState, the same
- * observable the sidebar uses.
+ * Focused desktop extension navigator shared by compatibility and advanced
+ * shells. The home view exposes clickable projects; each project's controls
+ * and data mount only after the user opens it.
  */
 
 import { createElement as h, useEffect, useMemo, useRef, useState } from 'react'
@@ -15,9 +9,9 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-client-connection/client'
 import type { DesktopLayoutService } from './contracts.ts'
 import {
-  deleteKnowledgeCard, fetchKnowledgeState, fetchNewsItems, relativeTime,
+  deleteKnowledgeCard, fetchDailyNews, fetchKnowledgeState, relativeTime,
 } from './knowledge-client.ts'
-import type { KnowledgeCardView, NewsItemView } from './knowledge-client.ts'
+import type { DailyNewsFeedView, KnowledgeCardView } from './knowledge-client.ts'
 import type { SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 
 export interface ExtendedTranslate {
@@ -34,7 +28,8 @@ export interface ExtendedPanelInjected {
 
 export type ExtendedPanelProps = PropsRuntime<'panel.extended'> & ExtendedPanelInjected
 
-type SectionId = 'conversation' | 'knowledge' | 'news' | 'expert'
+type ProjectId = 'conversation' | 'knowledge' | 'news' | 'graph' | 'expert'
+type PanelView = 'home' | ProjectId
 
 const knowledgePollMs = 5_000
 
@@ -67,7 +62,6 @@ const sectionCard: React.CSSProperties = {
   border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
   borderRadius: 8, padding: 10, display: 'flex', flexDirection: 'column', gap: 6, flex: '0 0 auto',
 }
-const sectionTitle: React.CSSProperties = { fontSize: 13, fontWeight: 600, margin: 0 }
 const muted: React.CSSProperties = { color: 'var(--dsh-color-text-muted, #888)', fontSize: 12, margin: 0 }
 const searchInput: React.CSSProperties = {
   width: '100%', boxSizing: 'border-box', padding: '5px 8px', borderRadius: 6,
@@ -96,7 +90,20 @@ const dangerButton: React.CSSProperties = {
   ...smallButton,
   color: '#e5484d', borderColor: 'rgba(229,72,77,0.5)',
 }
-const graphSvg: React.CSSProperties = { width: '100%', height: 160, display: 'block' }
+const graphSvg: React.CSSProperties = { width: '100%', height: 180, display: 'block' }
+const projectButton: React.CSSProperties = {
+  width: '100%', minHeight: 64, boxSizing: 'border-box', display: 'grid',
+  gridTemplateColumns: '32px minmax(0, 1fr) 18px', alignItems: 'center', gap: 10,
+  padding: '10px 12px', borderRadius: 8, border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
+  background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer', font: 'inherit',
+}
+const projectIcon: React.CSSProperties = { width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }
+const projectCopy: React.CSSProperties = { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }
+const projectLabel: React.CSSProperties = { fontSize: 13, fontWeight: 650 }
+const projectDescription: React.CSSProperties = { color: 'var(--dsh-color-text-muted, #888)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+const projectContent: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }
+const headerLeft: React.CSSProperties = { minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }
+const backButton: React.CSSProperties = { width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: 6, background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 16, padding: 0 }
 
 function fmt(t: ExtendedTranslate, key: string, vars: Record<string, string | number>): string {
   let text = t(key)
@@ -207,8 +214,7 @@ function KnowledgeSection(props: { t: ExtendedTranslate }): React.ReactNode {
 
   const detailCard = cards?.find((card) => card.id === selectedId) ?? null
 
-  return h('div', { style: sectionCard },
-    h('h3', { style: sectionTitle }, t('knowledgeTitle')),
+  return h('div', { style: projectContent },
     h('input', {
       style: searchInput,
       placeholder: t('knowledgeSearchPlaceholder'),
@@ -257,104 +263,129 @@ function KnowledgeSection(props: { t: ExtendedTranslate }): React.ReactNode {
   )
 }
 
-/** 新闻与知识图谱 — news items plus a tag-derived knowledge graph. */
-function NewsGraphSection(props: { t: ExtendedTranslate }): React.ReactNode {
+/** 每日热点新闻 — loaded only after the project opens. */
+function DailyNewsSection(props: { t: ExtendedTranslate }): React.ReactNode {
   const { t } = props
-  const [items, setItems] = useState<NewsItemView[] | null>(null)
-  const [cards, setCards] = useState<KnowledgeCardView[]>([])
-  const [newsError, setNewsError] = useState('')
-  const newsAvailable = useRef(false)
+  const [feed, setFeed] = useState<DailyNewsFeedView | null>(null)
+  const [loadError, setLoadError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const refresh = async (force: boolean): Promise<void> => {
+    setBusy(true)
+    const next = await fetchDailyNews(force)
+    if (next === null) setLoadError(t('dailyNewsUnavailable'))
+    else { setFeed(next); setLoadError('') }
+    setBusy(false)
+  }
+
+  useEffect(() => { void refresh(false) }, [])
+
+  if (loadError !== '') return h('div', { style: projectContent },
+    h('p', { style: muted }, loadError),
+    h('button', {
+      type: 'button', style: smallButton, disabled: busy,
+      onClick: () => { void refresh(true) },
+    }, busy ? t('dailyNewsRefreshing') : t('dailyNewsRetry')),
+  )
+  if (feed === null) return h('p', { style: muted }, '…')
+  return h('div', { style: projectContent },
+    h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+      h('p', { style: muted }, fmt(t, 'dailyNewsMeta', { source: feed.source, date: feed.date })),
+      h('button', {
+        type: 'button', style: smallButton, disabled: busy,
+        onClick: () => { void refresh(true) },
+      }, busy ? t('dailyNewsRefreshing') : t('dailyNewsRefresh')),
+    ),
+    h('ol', { style: { margin: 0, paddingLeft: 22, display: 'flex', flexDirection: 'column', gap: 8 } },
+      ...feed.items.map((item) => h('li', { key: item.id, style: { paddingLeft: 2 } },
+        h('a', {
+          href: item.url ?? feed.sourceUrl, target: '_blank', rel: 'noreferrer',
+          style: { fontSize: 12, lineHeight: 1.5, color: 'inherit', textDecoration: 'none' },
+        }, item.title),
+      )),
+    ),
+    h('a', {
+      href: feed.sourceUrl, target: '_blank', rel: 'noreferrer',
+      style: { ...smallButton, textDecoration: 'none', alignSelf: 'flex-start' },
+    }, t('dailyNewsOpenSource')),
+  )
+}
+
+/** 知识图谱 — tag-derived relationships between knowledge cards. */
+function KnowledgeGraphSection(props: { t: ExtendedTranslate }): React.ReactNode {
+  const { t } = props
+  const [cards, setCards] = useState<KnowledgeCardView[] | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   useEffect(() => {
     let disposed = false
-    void (async () => {
-      const [news, knowledge] = await Promise.all([fetchNewsItems(), fetchKnowledgeState()])
-      if (disposed) return
-      if (news !== null) {
-        newsAvailable.current = true
-        setItems(news)
-        setNewsError('')
-      } else if (!newsAvailable.current) {
-        setNewsError(fmt(t, 'newsLoadError', { error: t('newsRouteUnavailable') }))
-      }
-      if (knowledge !== null) setCards(knowledge.cards)
-    })()
+    void fetchKnowledgeState().then((state) => { if (!disposed) setCards(state?.cards ?? []) })
     return () => { disposed = true }
-  }, [t])
+  }, [])
 
+  const limited = (cards ?? []).slice(0, 12)
   const edges = useMemo(() => {
     const result: Array<{ a: number; b: number; tag: string }> = []
-    const limited = cards.slice(0, 12)
     for (let i = 0; i < limited.length; i += 1) {
       for (let j = i + 1; j < limited.length; j += 1) {
-        const shared = (limited[i]!.tags ?? []).find((tag) => (limited[j]!.tags ?? []).includes(tag))
+        const shared = limited[i]!.tags.find((tag) => limited[j]!.tags.includes(tag))
         if (shared !== undefined) result.push({ a: i, b: j, tag: shared })
       }
     }
     return result
   }, [cards])
-
-  const graphNode = (index: number): { x: number; y: number } => {
-    const center = 80
-    const radius = 62
-    const angle = (index / Math.max(1, cards.length)) * Math.PI * 2 - Math.PI / 2
-    return { x: center + radius * Math.cos(angle), y: center + radius * Math.sin(angle) }
+  const point = (index: number): { x: number; y: number } => {
+    const angle = (index / Math.max(1, limited.length)) * Math.PI * 2 - Math.PI / 2
+    return { x: 90 + 70 * Math.cos(angle), y: 90 + 70 * Math.sin(angle) }
   }
+  const selected = limited.find((card) => card.id === selectedId) ?? null
 
-  return h('div', { style: sectionCard },
-    h('h3', { style: sectionTitle }, t('newsTitle')),
-    newsError !== ''
-      ? h('p', { style: muted }, newsError)
-      : items === null
-        ? h('p', { style: muted }, '…')
-        : items.length === 0
-          ? h('p', { style: muted }, t('newsEmpty'))
-          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-            ...items.slice(0, 8).map((item) => {
-              const rowStyle: React.CSSProperties = { fontSize: 12, color: 'inherit', display: 'flex', flexDirection: 'column', gap: 2 }
-              const body = [
-                h('span', { key: 'title', style: { fontWeight: 600 } }, item.title),
-                item.summary !== undefined && item.summary !== '' ? h('span', { key: 'summary', style: muted }, item.summary) : null,
-                h('span', { key: 'time', style: muted }, relativeTime(Date.now(), item.publishedAt)),
-              ]
-              return item.url !== undefined && item.url !== ''
-                ? h('a', { key: item.id, href: item.url, style: { ...rowStyle, textDecoration: 'none' } }, ...body)
-                : h('div', { key: item.id, style: rowStyle }, ...body)
-            }),
-          ),
-    h('h3', { style: { ...sectionTitle, marginTop: 4 } }, t('graphTitle')),
-    cards.length < 2
-      ? h('p', { style: muted }, t('graphEmpty'))
-      : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-        h('svg', { viewBox: '0 0 160 160', style: graphSvg, role: 'img', 'aria-label': t('graphTitle') },
-          ...edges.map((edge, index) => {
-            const from = graphNode(edge.a)
-            const to = graphNode(edge.b)
-            return h('line', {
-              key: `edge-${index}`,
-              x1: from.x, y1: from.y, x2: to.x, y2: to.y,
-              stroke: 'var(--dsh-color-border, rgba(127,127,127,0.45))',
-              strokeWidth: 1,
-            })
-          }),
-          ...cards.slice(0, 12).map((card, index) => {
-            const point = graphNode(index)
-            return h('g', { key: card.id },
-              h('circle', { cx: point.x, cy: point.y, r: 10, fill: 'var(--dsh-color-accent, #4c8bf5)', opacity: 0.85 }),
-              h('text', {
-                x: point.x, y: point.y + 3, textAnchor: 'middle',
-                fill: '#fff', fontSize: 7, fontWeight: 700, style: { pointerEvents: 'none' },
-              }, String(index + 1)),
-            )
-          }),
-        ),
-        h('p', { style: muted }, t('graphHint')),
-        edges.length > 0
-          ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4 } },
-            ...edges.map((edge, index) => h('span', { key: `tag-${index}`, style: chip }, edge.tag)),
-          )
-          : null,
-      ),
+  if (cards === null) return h('p', { style: muted }, '…')
+  if (limited.length < 2) return h('p', { style: muted }, t('graphEmpty'))
+  return h('div', { style: projectContent },
+    h('svg', { viewBox: '0 0 180 180', style: graphSvg, role: 'img', 'aria-label': t('graphTitle') },
+      ...edges.map((edge, index) => {
+        const from = point(edge.a); const to = point(edge.b)
+        return h('line', {
+          key: `edge-${index}`, x1: from.x, y1: from.y, x2: to.x, y2: to.y,
+          stroke: 'var(--dsh-color-border, rgba(127,127,127,0.45))', strokeWidth: 1,
+        })
+      }),
+      ...limited.map((card, index) => {
+        const node = point(index); const active = card.id === selectedId
+        return h('g', {
+          key: card.id, role: 'button', tabIndex: 0, style: { cursor: 'pointer' },
+          onClick: () => { setSelectedId(card.id) },
+          onKeyDown: (event: React.KeyboardEvent<SVGGElement>) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              setSelectedId(card.id)
+            }
+          },
+        },
+        h('circle', {
+          cx: node.x, cy: node.y, r: active ? 13 : 11,
+          fill: 'var(--dsh-color-accent, #4c8bf5)', opacity: active ? 1 : 0.82,
+        }),
+        h('text', {
+          x: node.x, y: node.y + 3, textAnchor: 'middle', fill: '#fff',
+          fontSize: 7, fontWeight: 700, style: { pointerEvents: 'none' },
+        }, String(index + 1)),
+        )
+      }),
+    ),
+    h('p', { style: muted }, t('graphHint')),
+    ...limited.map((card, index) => h('button', {
+      key: card.id, type: 'button', style: card.id === selectedId ? cardRowActive : cardRow,
+      onClick: () => { setSelectedId(card.id) },
+    },
+    h('span', { style: { fontSize: 12, fontWeight: 600 } }, `${String(index + 1)}. ${card.title}`),
+    card.tags.length > 0 ? h('span', {}, ...card.tags.map((tag) => h('span', { key: tag, style: chip }, tag))) : null,
+    )),
+    selected !== null ? h('div', { style: sectionCard },
+      h('div', { style: { fontSize: 13, fontWeight: 700 } }, selected.title),
+      h('p', { style: { fontSize: 12, margin: 0, lineHeight: 1.5 } }, selected.summary),
+    ) : null,
   )
 }
 
@@ -383,8 +414,7 @@ function ExpertStyleSection(props: { t: ExtendedTranslate }): React.ReactNode {
       // Persistence is best-effort; the in-memory selection still applies.
     }
   }
-  return h('div', { style: sectionCard },
-    h('h3', { style: sectionTitle }, t('expertTitle')),
+  return h('div', { style: projectContent },
     h('p', { style: muted }, t('expertHint')),
     ...modes.map((mode) => {
       const active = mode.id === style
@@ -404,47 +434,85 @@ function ExpertStyleSection(props: { t: ExtendedTranslate }): React.ReactNode {
   )
 }
 
-/**
- * The left extended panel. Collapsed (owner `collapsed`) it renders the
- * compact rail of section icons; expanded it stacks the four vertical
- * sections inside a scrollable column.
- */
+/** Render the extension project home menu. */
+function ProjectMenu(props: { t: ExtendedTranslate; open: (id: ProjectId) => void }): React.ReactNode {
+  const { t, open } = props
+  const projects: Array<{ id: ProjectId; icon: string; label: string; description: string }> = [
+    { id: 'conversation', icon: '💬', label: t('conversationTitle'), description: t('conversationProjectDesc') },
+    { id: 'knowledge', icon: '📇', label: t('knowledgeTitle'), description: t('knowledgeProjectDesc') },
+    { id: 'news', icon: '📰', label: t('dailyNewsTitle'), description: t('dailyNewsProjectDesc') },
+    { id: 'graph', icon: '◉', label: t('graphTitle'), description: t('graphProjectDesc') },
+    { id: 'expert', icon: '◎', label: t('expertTitle'), description: t('expertProjectDesc') },
+  ]
+  return h('div', { style: projectContent }, ...projects.map((project) => h('button', {
+    key: project.id,
+    type: 'button',
+    style: projectButton,
+    onClick: () => { open(project.id) },
+  },
+  h('span', { style: projectIcon, 'aria-hidden': true }, project.icon),
+  h('span', { style: projectCopy },
+    h('span', { style: projectLabel }, project.label),
+    h('span', { style: projectDescription }, project.description),
+  ),
+  h('span', { style: { color: 'var(--dsh-color-text-muted, #888)', textAlign: 'right' }, 'aria-hidden': true }, '›'),
+  )))
+}
+
+function projectTitle(t: ExtendedTranslate, view: PanelView): string {
+  if (view === 'conversation') return t('conversationTitle')
+  if (view === 'knowledge') return t('knowledgeTitle')
+  if (view === 'news') return t('dailyNewsTitle')
+  if (view === 'graph') return t('graphTitle')
+  if (view === 'expert') return t('expertTitle')
+  return t('nav')
+}
+
+/** Focused project navigator; collapsed mode keeps direct shortcuts. */
 export function ExtendedPanel(props: ExtendedPanelProps): React.ReactNode {
   const { t, layout, openSession, collapsed, useSessions } = props
-  const [railSection, setRailSection] = useState<SectionId>('knowledge')
+  const [view, setView] = useState<PanelView>('home')
+  const projects: Array<{ id: ProjectId; icon: string; label: string }> = [
+    { id: 'conversation', icon: '💬', label: t('conversationTitle') },
+    { id: 'knowledge', icon: '📇', label: t('knowledgeTitle') },
+    { id: 'news', icon: '📰', label: t('dailyNewsTitle') },
+    { id: 'graph', icon: '◉', label: t('graphTitle') },
+    { id: 'expert', icon: '◎', label: t('expertTitle') },
+  ]
 
-  if (collapsed) {
-    const icons: Array<{ id: SectionId; icon: string; label: string }> = [
-      { id: 'conversation', icon: '💬', label: t('railConversation') },
-      { id: 'knowledge', icon: '📇', label: t('railKnowledge') },
-      { id: 'news', icon: '🗞️', label: t('railNews') },
-      { id: 'expert', icon: '🎯', label: t('railExpert') },
-    ]
-    return h('div', { style: railStyle, role: 'navigation', 'aria-label': t('nav') },
-      ...icons.map((icon) => h('button', {
-        key: icon.id,
-        type: 'button',
-        title: icon.label,
-        'aria-label': icon.label,
-        style: railSection === icon.id ? railButtonActive : railButton,
-        onClick: () => {
-          setRailSection(icon.id)
-          layout.openExtended()
-        },
-      }, icon.icon)),
-    )
-  }
+  if (collapsed) return h('div', { style: railStyle, role: 'navigation', 'aria-label': t('nav') },
+    ...projects.map((project) => h('button', {
+      key: project.id,
+      type: 'button',
+      title: project.label,
+      'aria-label': project.label,
+      style: view === project.id ? railButtonActive : railButton,
+      onClick: () => { setView(project.id); layout.openExtended() },
+    }, project.icon)),
+  )
+
+  const content = view === 'home'
+    ? h(ProjectMenu, { t, open: setView })
+    : view === 'conversation'
+      ? h(ConversationSection, { t, openSession, useSessions })
+      : view === 'knowledge'
+        ? h(KnowledgeSection, { t })
+        : view === 'news'
+          ? h(DailyNewsSection, { t })
+          : view === 'graph'
+            ? h(KnowledgeGraphSection, { t })
+            : h(ExpertStyleSection, { t })
 
   return h('div', { style: surface },
     h('div', { style: headerRow },
-      h('h2', { style: headerTitle }, t('nav')),
+      h('div', { style: headerLeft },
+        view === 'home'
+          ? null
+          : h('button', { type: 'button', style: backButton, title: t('back'), 'aria-label': t('back'), onClick: () => { setView('home') } }, '‹'),
+        h('h2', { style: headerTitle }, projectTitle(t, view)),
+      ),
       h('button', { type: 'button', style: collapseButton, title: t('collapse'), 'aria-label': t('collapse'), onClick: () => { layout.toggleExtended() } }, '«'),
     ),
-    h('div', { style: body },
-      h(ConversationSection, { t, openSession, useSessions }),
-      h(KnowledgeSection, { t }),
-      h(NewsGraphSection, { t }),
-      h(ExpertStyleSection, { t }),
-    ),
+    h('div', { style: body }, content),
   )
 }

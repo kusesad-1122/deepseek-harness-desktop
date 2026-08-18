@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { KnowledgeStore, parseDistillOutput, tokenizeQuery, type Config as KnowledgeConfig } from '../src/knowledge.ts'
 import { renderKnowledgeContext } from '../src/knowledge-web.ts'
-import { KNOWLEDGE_NEWS_ROUTE, mountKnowledgeRoutes } from '../src/knowledge-routes.ts'
+import { DAILY_NEWS_ROUTE, mountKnowledgeRoutes, parseDailyNewsPayload } from '../src/knowledge-routes.ts'
 import { supportsEffort } from '../src/reasoning-default.ts'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -128,16 +128,13 @@ describe('KnowledgeStore', () => {
   })
 })
 
-describe('knowledge news route', () => {
-  it('returns newest knowledge cards in the client NewsItemView shape', async () => {
+describe('daily hot news route', () => {
+  it('serves a dedicated daily-news feed instead of knowledge cards', async () => {
     const store = createStore(tempDir())
     await store.loadFromDisk()
-    const first = await store.addCard({ title: 'Older', summary: 'first' }, 'manual')
-    const second = await store.addCard({ title: 'Newer', summary: 'second' }, 'manual')
-    expect(first.card).toBeDefined()
-    expect(second.card).toBeDefined()
-
+    await store.addCard({ title: 'Knowledge only', summary: 'must not become news' }, 'manual')
     const routes = new Map<string, (request: unknown, response: unknown) => void | Promise<void>>()
+    let forced = false
     const host = {
       webServer: {
         register: ({ path, handler }: { path: string, handler: (request: unknown, response: unknown) => void | Promise<void> }) => {
@@ -150,24 +147,37 @@ describe('knowledge news route', () => {
     const dispose = mountKnowledgeRoutes(host as never, store, {
       enabled: true, maxCards: 50, titleCharLimit: 80, cardCharLimit: 600, maxTags: 8,
       tagCharLimit: 24, retrieveTopK: 4, autoRetrieval: true,
+    }, async (forceRefresh) => {
+      forced = forceRefresh
+      return {
+        date: '2026-08-18', source: 'Daily source', sourceUrl: 'https://news.example/daily',
+        items: [{ id: 'headline-1', title: 'Real headline', url: 'https://news.example/daily', publishedAt: '2026-08-18T00:00:00.000Z' }],
+      }
     })
-    const handler = routes.get(KNOWLEDGE_NEWS_ROUTE)
+    const handler = routes.get(DAILY_NEWS_ROUTE)
     expect(handler).toBeDefined()
-    const response = new EventEmitter() as EventEmitter & { status?: number, headers?: unknown, body?: string, writeHead(status: number, headers: unknown): void, end(body: string): void }
-    response.writeHead = (status, headers) => { response.status = status; response.headers = headers }
-    response.end = (body) => { response.body = body }
-    await handler?.({ url: '/dsh-desktop/knowledge/news?limit=1', headers: {} }, response)
+    const response = new EventEmitter() as EventEmitter & { status?: number, body?: string, writeHead(status: number): void, end(body: string): void }
+    response.writeHead = status => { response.status = status }
+    response.end = body => { response.body = body }
+    await handler?.({ url: '/dsh-desktop/news/daily?refresh=1', headers: {} }, response)
 
+    expect(forced).toBe(true)
     expect(response.status).toBe(200)
-    const payload = JSON.parse(response.body ?? '{}')
-    expect(payload.items).toHaveLength(1)
-    expect(payload.items[0]).toEqual(expect.objectContaining({
-      id: second.card?.id,
-      title: 'Newer',
-      summary: 'second',
-      publishedAt: second.card?.updatedAt,
+    expect(JSON.parse(response.body ?? '{}')).toEqual(expect.objectContaining({
+      date: '2026-08-18', source: 'Daily source', items: [expect.objectContaining({ title: 'Real headline' })],
     }))
+    expect(response.body).not.toContain('Knowledge only')
     dispose()
+  })
+
+  it('validates and bounds the public daily-news response', () => {
+    const feed = parseDailyNewsPayload({
+      code: 200,
+      data: { date: '2026-08-18', link: 'https://news.example/daily', news: ['Headline A', '', 'Headline B'] },
+    })
+    expect(feed.source).toBe('每天60秒读懂世界')
+    expect(feed.items.map(item => item.title)).toEqual(['Headline A', 'Headline B'])
+    expect(() => parseDailyNewsPayload({ code: 500 })).toThrow('did not return success')
   })
 })
 

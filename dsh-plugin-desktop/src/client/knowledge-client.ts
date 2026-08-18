@@ -9,10 +9,9 @@
  *   POST /dsh-desktop/knowledge/cards          { title, summary, tags?, source? }
  *   POST /dsh-desktop/knowledge/cards/update   { id, title, summary, tags? }
  *   POST /dsh-desktop/knowledge/cards/delete   { id } → { success, message?, error? }
+ *   GET  /dsh-desktop/news/daily                 → { date, source, sourceUrl, items }
  *
- * The news feed is optional and forward-compatible: when the host has not
- * mounted `/dsh-desktop/knowledge/news` yet, the news section shows a neutral
- * hint instead of breaking the panel.
+ * Daily hot news is a dedicated feed and never aliases knowledge cards.
  */
 
 export const KNOWLEDGE_STATE_ROUTE = '/dsh-desktop/knowledge/state'
@@ -21,7 +20,7 @@ export const KNOWLEDGE_RETRIEVE_ROUTE = '/dsh-desktop/knowledge/retrieve'
 export const KNOWLEDGE_CARDS_ROUTE = '/dsh-desktop/knowledge/cards'
 export const KNOWLEDGE_UPDATE_ROUTE = '/dsh-desktop/knowledge/cards/update'
 export const KNOWLEDGE_DELETE_ROUTE = '/dsh-desktop/knowledge/cards/delete'
-export const KNOWLEDGE_NEWS_ROUTE = '/dsh-desktop/knowledge/news'
+export const DAILY_NEWS_ROUTE = '/dsh-desktop/news/daily'
 
 /** Who created the card; mirrors the host KnowledgeOrigin. */
 export type KnowledgeOrigin = 'manual' | 'distill' | 'model'
@@ -51,13 +50,20 @@ export interface KnowledgeStateView {
   readonly cards: KnowledgeCardView[]
 }
 
-/** One news item (optional host feed). */
-export interface NewsItemView {
+/** One daily-hot-news headline. */
+export interface DailyNewsItemView {
   readonly id: string
   readonly title: string
   readonly url?: string
-  readonly summary?: string
   readonly publishedAt: string
+}
+
+/** Daily-hot-news feed metadata and headlines. */
+export interface DailyNewsFeedView {
+  readonly date: string
+  readonly source: string
+  readonly sourceUrl: string
+  readonly items: DailyNewsItemView[]
 }
 
 /** @returns a bounded, human-friendly relative time label from an ISO timestamp or epoch ms. */
@@ -116,11 +122,18 @@ export async function deleteKnowledgeCard(id: string): Promise<{ ok: boolean, er
   }
 }
 
-/** Load the news items; null when the host route is unavailable. */
-export async function fetchNewsItems(): Promise<NewsItemView[] | null> {
-  const body = await getJson(KNOWLEDGE_NEWS_ROUTE) as { items?: unknown } | null
+/** Load the daily hot-news feed; null when the host or source is unavailable. */
+export async function fetchDailyNews(forceRefresh = false): Promise<DailyNewsFeedView | null> {
+  const route = forceRefresh ? `${DAILY_NEWS_ROUTE}?refresh=1` : DAILY_NEWS_ROUTE
+  const body = await getJson(route) as Record<string, unknown> | null
   if (body === null || !Array.isArray(body.items)) return null
-  return body.items.filter(isNewsItem)
+  if (typeof body.date !== 'string' || typeof body.source !== 'string' || typeof body.sourceUrl !== 'string') return null
+  return {
+    date: body.date,
+    source: body.source,
+    sourceUrl: body.sourceUrl,
+    items: body.items.filter(isDailyNewsItem),
+  }
 }
 
 function isKnowledgeCard(value: unknown): value is KnowledgeCardView {
@@ -134,8 +147,11 @@ function isKnowledgeCard(value: unknown): value is KnowledgeCardView {
     && Array.isArray(card.tags)
 }
 
-function isNewsItem(value: unknown): value is NewsItemView {
+function isDailyNewsItem(value: unknown): value is DailyNewsItemView {
   if (typeof value !== 'object' || value === null) return false
   const item = value as Record<string, unknown>
-  return typeof item.id === 'string' && typeof item.title === 'string'
+  return typeof item.id === 'string'
+    && typeof item.title === 'string'
+    && typeof item.publishedAt === 'string'
+    && (item.url === undefined || typeof item.url === 'string')
 }

@@ -1,3 +1,5 @@
+import { createElement as h } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { provideDesktopLayout } from '../src/client/layout-service.ts'
@@ -7,6 +9,8 @@ import {
   EXTENDED_COLLAPSED, EXTENDED_DEFAULT, MACOS_SIDEBAR_COLLAPSED, SIDEBAR_COLLAPSED,
 } from '../src/client/layout-state.ts'
 import { installAdvancedStyles, installCompatibilityStyles } from '../src/client/styles.ts'
+import { ExtendedPanel } from '../src/client/extended-panel.tsx'
+import { zh as extendedZh } from '../src/client/extended-locales.ts'
 import {
   MACOS_DRAG_REGION_HEIGHT,
   MACOS_TITLEBAR_HEIGHT,
@@ -30,6 +34,26 @@ describe('desktop client environment', () => {
     ['?dsh-desktop-mode=advanced&dsh-desktop-platform=android', 'dsh-desktop-platform'],
   ])('fails loud for malformed marker %s', (search, field) => {
     expect(() => parseDesktopClientEnvironment(search)).toThrow(field)
+  })
+})
+
+describe('extended project navigation', () => {
+  it('renders clickable project entries without expanding their controls on the home view', () => {
+    const t = (key: string): string => (extendedZh as Record<string, string>)[key] ?? key
+    const html = renderToStaticMarkup(h(ExtendedPanel, {
+      t,
+      layout: { openExtended: () => {}, toggleExtended: () => {} },
+      openSession: () => {},
+      collapsed: false,
+      useSessions: (selector: (state: unknown) => unknown) => selector({ ids: [], byId: {}, current: undefined }),
+    } as never))
+
+    for (const label of ['对话', '知识卡', '每日热点新闻', '知识图谱', '专家风格模式']) {
+      expect(html).toContain(label)
+    }
+    expect(html).not.toContain('搜索标题、摘要或标签')
+    expect(html).not.toContain('平衡 ✓')
+    expect(html).not.toContain('新闻与知识图谱')
   })
 })
 
