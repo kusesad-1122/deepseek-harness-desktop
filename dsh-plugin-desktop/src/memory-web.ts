@@ -21,9 +21,10 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import { desktopWebRouteClient, type DesktopWebRouteClient } from './desktop-web-route.ts'
 
 export const name = 'dsh-plugin-desktop-memory-web'
-export const inject = ['llm', 'systemPrompt', 'tools']
+export const inject = ['llm', 'systemPrompt', 'tools', 'webServer']
 
 const STATE_ROUTE = '/dsh-desktop/memory/state'
 const WRITE_ROUTE = '/dsh-desktop/memory/write'
@@ -63,6 +64,12 @@ interface MemoryState { readonly targets?: readonly TargetView[], readonly revie
 
 let snapshot = ''
 let reviewConfig = { enabled: true, interval: 6 }
+let routes: DesktopWebRouteClient | undefined
+
+function requireRoutes(): DesktopWebRouteClient {
+  if (routes === undefined) throw new Error('dsh-plugin-desktop: memory bridge has no Web route client')
+  return routes
+}
 
 function buildSnapshotText(state: MemoryState): string {
   const parts: string[] = []
@@ -77,7 +84,7 @@ function buildSnapshotText(state: MemoryState): string {
 
 async function refresh(): Promise<void> {
   try {
-    const response = await fetch(STATE_ROUTE, { cache: 'no-store' })
+    const response = await fetch(requireRoutes().url(STATE_ROUTE), { cache: 'no-store' })
     if (!response.ok) return
     const state = await response.json() as MemoryState
     snapshot = buildSnapshotText(state)
@@ -94,9 +101,9 @@ async function refresh(): Promise<void> {
 }
 
 async function writeMemory(target: 'memory' | 'user', operations: unknown[], origin: 'foreground' | 'review'): Promise<Record<string, unknown>> {
-  const response = await fetch(WRITE_ROUTE, {
+  const response = await fetch(requireRoutes().url(WRITE_ROUTE), {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: requireRoutes().mutationHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify({ target, operations, origin }),
   })
   const body = await response.json() as Record<string, unknown>
@@ -206,6 +213,7 @@ const REVIEW_SYSTEM_PROMPT = [
 
 /** Register the renderer-side memory surfaces. @param ctx - renderer harness context. */
 export function apply(ctx: Context): void {
+  routes = desktopWebRouteClient(ctx)
   void refresh()
 
   // Snapshot refresh timer; lives for the plugin lifetime (one per app run).

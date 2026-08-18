@@ -21,9 +21,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { desktopWebRouteClient, type DesktopWebRouteClient } from './desktop-web-route.ts'
 
 export const name = 'dsh-plugin-desktop-knowledge-web'
-export const inject = ['systemPrompt', 'tools']
+export const inject = ['systemPrompt', 'tools', 'webServer']
 
 const STATE_ROUTE = '/dsh-desktop/knowledge/state'
 const SEARCH_ROUTE = '/dsh-desktop/knowledge/search'
@@ -92,10 +93,16 @@ interface KnowledgeState {
 }
 
 let retrievalConfig = { enabled: true, topK: 4 }
+let routes: DesktopWebRouteClient | undefined
+
+function requireRoutes(): DesktopWebRouteClient {
+  if (routes === undefined) throw new Error('dsh-plugin-desktop: knowledge bridge has no Web route client')
+  return routes
+}
 
 async function refreshConfig(): Promise<void> {
   try {
-    const response = await fetch(STATE_ROUTE, { cache: 'no-store' })
+    const response = await fetch(requireRoutes().url(STATE_ROUTE), { cache: 'no-store' })
     if (!response.ok) return
     const state = await response.json() as KnowledgeState
     retrievalConfig = {
@@ -108,9 +115,9 @@ async function refreshConfig(): Promise<void> {
 }
 
 async function postJson(route: string, body: unknown): Promise<Record<string, unknown>> {
-  const response = await fetch(route, {
+  const response = await fetch(requireRoutes().url(route), {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: requireRoutes().mutationHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   })
   const parsed = await response.json() as Record<string, unknown>
@@ -119,7 +126,7 @@ async function postJson(route: string, body: unknown): Promise<Record<string, un
 }
 
 async function getJson(route: string): Promise<Record<string, unknown>> {
-  const response = await fetch(route, { cache: 'no-store' })
+  const response = await fetch(requireRoutes().url(route), { cache: 'no-store' })
   if (!response.ok) return { success: false, error: String(response.status) }
   return response.json() as Promise<Record<string, unknown>>
 }
@@ -184,7 +191,7 @@ async function injectRetrievedKnowledge(agent: Agent, sections: Array<{ name: st
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(new Error('knowledge retrieval timed out')), RETRIEVE_TIMEOUT_MS)
     try {
-      const response = await fetch(`${RETRIEVE_ROUTE}?q=${encodeURIComponent(query)}&top=${String(retrievalConfig.topK)}`, {
+      const response = await fetch(requireRoutes().url(`${RETRIEVE_ROUTE}?q=${encodeURIComponent(query)}&top=${String(retrievalConfig.topK)}`), {
         cache: 'no-store',
         signal: controller.signal,
       })
@@ -207,6 +214,7 @@ async function injectRetrievedKnowledge(agent: Agent, sections: Array<{ name: st
 
 /** Register the knowledge tool and the auto-retrieval prompt seam. @param ctx - harness context. */
 export function apply(ctx: Context): void {
+  routes = desktopWebRouteClient(ctx)
   void refreshConfig()
   // The refresh timer is effect-scoped so a fiber dispose clears it — the
   // loader/profile smokes boot this plugin and must exit cleanly.
