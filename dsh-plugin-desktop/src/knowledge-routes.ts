@@ -27,6 +27,7 @@ export const KNOWLEDGE_RETRIEVE_ROUTE = '/dsh-desktop/knowledge/retrieve'
 export const KNOWLEDGE_CARDS_ROUTE = '/dsh-desktop/knowledge/cards'
 export const KNOWLEDGE_UPDATE_ROUTE = '/dsh-desktop/knowledge/cards/update'
 export const KNOWLEDGE_DELETE_ROUTE = '/dsh-desktop/knowledge/cards/delete'
+export const KNOWLEDGE_NEWS_ROUTE = '/dsh-desktop/knowledge/news'
 
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {
   response.writeHead(status, {
@@ -129,6 +130,26 @@ export function mountKnowledgeRoutes(host: KnowledgeHost, store: KnowledgeStore,
           intParam(url, 'top', config.retrieveTopK, 20),
         ),
       })
+    },
+  }))
+  disposers.push(host.webServer.register({
+    kind: 'exact',
+    path: KNOWLEDGE_NEWS_ROUTE,
+    handler: async (request, response) => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+      const limit = intParam(url, 'limit', 8, 20)
+      const latest = store
+        .allCards()
+        .slice()
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .slice(0, limit)
+      const items = latest.map((card) => ({
+        id: card.id,
+        title: card.title,
+        summary: card.summary,
+        publishedAt: card.updatedAt,
+      }))
+      sendJson(response, 200, { items })
     },
   }))
   disposers.push(host.webServer.register({
