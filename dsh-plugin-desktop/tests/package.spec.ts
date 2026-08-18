@@ -97,6 +97,19 @@ describe('published package surface', () => {
     expect(readFileSync(new URL('cordis.patch.yml', packageRoot), 'utf8')).toContain('name: dsh-plugin-desktop/updates')
   })
 
+  it('patches the packaged pi-ai dependency so hand-declared models expose every reasoning level', () => {
+    const resolution = workspaceManifest.resolutions?.['@deepseek-ai/dsh-llm-pi-ai@npm:^0.1.0-rc.6']
+    expect(resolution).toBe(
+      'patch:@deepseek-ai/dsh-llm-pi-ai@npm%3A0.1.0-rc.6#./patches/dsh-llm-pi-ai@0.1.0-rc.6.patch',
+    )
+
+    const require = createRequire(new URL('package.json', packageRoot))
+    const installed = readFileSync(require.resolve('@deepseek-ai/dsh-llm-pi-ai'), 'utf8')
+    expect(installed).toContain('if (base !== void 0) return { reasoning: base.reasoning };')
+    expect(installed).toContain('map[level] = level === "off" ? "" : level;')
+    expect(installed).not.toContain('if (efforts === void 0) return { reasoning: base?.reasoning ?? false };')
+  })
+
   it('keeps unaudited marketplace packages out of the published runtime', () => {
     expect(manifest.dependencies).not.toHaveProperty('dshmarket')
     expect(manifest.optionalDependencies ?? {}).not.toHaveProperty('dshmarket')

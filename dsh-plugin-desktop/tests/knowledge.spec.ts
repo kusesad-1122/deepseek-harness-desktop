@@ -2,8 +2,10 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { EventEmitter } from 'node:events'
 import { KnowledgeStore, parseDistillOutput, tokenizeQuery, type Config as KnowledgeConfig } from '../src/knowledge.ts'
 import { renderKnowledgeContext } from '../src/knowledge-web.ts'
+import { KNOWLEDGE_NEWS_ROUTE, mountKnowledgeRoutes } from '../src/knowledge-routes.ts'
 import { supportsEffort } from '../src/reasoning-default.ts'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -123,6 +125,49 @@ describe('KnowledgeStore', () => {
     const newest = store.retrieve('', 2)
     expect(newest).toHaveLength(2)
     expect(newest[0]?.title).toBe('Beta')
+  })
+})
+
+describe('knowledge news route', () => {
+  it('returns newest knowledge cards in the client NewsItemView shape', async () => {
+    const store = createStore(tempDir())
+    await store.loadFromDisk()
+    const first = await store.addCard({ title: 'Older', summary: 'first' }, 'manual')
+    const second = await store.addCard({ title: 'Newer', summary: 'second' }, 'manual')
+    expect(first.card).toBeDefined()
+    expect(second.card).toBeDefined()
+
+    const routes = new Map<string, (request: unknown, response: unknown) => void | Promise<void>>()
+    const host = {
+      webServer: {
+        register: ({ path, handler }: { path: string, handler: (request: unknown, response: unknown) => void | Promise<void> }) => {
+          routes.set(path, handler)
+          return () => { routes.delete(path) }
+        },
+      },
+      effect: () => {},
+    }
+    const dispose = mountKnowledgeRoutes(host as never, store, {
+      enabled: true, maxCards: 50, titleCharLimit: 80, cardCharLimit: 600, maxTags: 8,
+      tagCharLimit: 24, retrieveTopK: 4, autoRetrieval: true,
+    })
+    const handler = routes.get(KNOWLEDGE_NEWS_ROUTE)
+    expect(handler).toBeDefined()
+    const response = new EventEmitter() as EventEmitter & { status?: number, headers?: unknown, body?: string, writeHead(status: number, headers: unknown): void, end(body: string): void }
+    response.writeHead = (status, headers) => { response.status = status; response.headers = headers }
+    response.end = (body) => { response.body = body }
+    await handler?.({ url: '/dsh-desktop/knowledge/news?limit=1', headers: {} }, response)
+
+    expect(response.status).toBe(200)
+    const payload = JSON.parse(response.body ?? '{}')
+    expect(payload.items).toHaveLength(1)
+    expect(payload.items[0]).toEqual(expect.objectContaining({
+      id: second.card?.id,
+      title: 'Newer',
+      summary: 'second',
+      publishedAt: second.card?.updatedAt,
+    }))
+    dispose()
   })
 })
 

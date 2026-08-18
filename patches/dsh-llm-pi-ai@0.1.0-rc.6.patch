@@ -1,0 +1,23 @@
+diff --git a/lib/index.js b/lib/index.js
+index 195d4073fa..07e43440c5 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1026,7 +1026,17 @@ function sharedCatalogApi(defaults) {
+ */
+ function resolveModelReasoning(provider, entry, base) {
+ 	const efforts = entry.reasoningEfforts;
+-	if (efforts === void 0) return { reasoning: base?.reasoning ?? false };
++	if (efforts === void 0) {
++		if (base !== void 0) return { reasoning: base.reasoning };
++		const map = {};
++		for (const level of THINKING_LEVELS) {
++			map[level] = level === "off" ? "" : level;
++		}
++		return {
++			reasoning: true,
++			thinkingLevelMap: map
++		};
++	}
+ 	if (efforts === false) return { reasoning: false };
+ 	if (efforts === null || Object.keys(efforts).length === 0) invalid(provider, `model "${entry.id}" has an empty reasoningEfforts; declare the offered levels, set false for a non-reasoning model, or omit the field to keep the installed catalog's capability`);
+ 	const declared = THINKING_LEVELS.flatMap((level) => {
