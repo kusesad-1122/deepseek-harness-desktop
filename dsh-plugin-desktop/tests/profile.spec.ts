@@ -1,6 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { composeEntries, initProfile, PROFILE_TEMPLATES } from '@deepseek-ai/dsh-app-boot'
@@ -14,6 +14,11 @@ import {
 } from '../src/profile.ts'
 
 const homes: string[] = []
+
+function dirnameOfInstallAnchor(): string {
+  return dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
+}
+
 
 function temporaryHome(): string {
   const home = mkdtempSync(join(tmpdir(), 'dsh-desktop-profile-'))
@@ -63,8 +68,26 @@ describe('desktop profile composition', () => {
       '@deepseek-ai/dsh-web-app',
       'third-party-plugin',
     ])
-    expect(repaired.dependencies).toEqual({ 'third-party-plugin': '^1.2.3' })
+    expect(repaired.dependencies).toEqual({
+      'third-party-plugin': '^1.2.3',
+      [DESKTOP_PACKAGE_NAME]: expect.stringContaining('dsh-plugin-desktop'),
+    })
     expect(repaired.custom.preserved).toBe(true)
+  })
+
+  it('replaces a stale physical desktop package copy with the current installation link', () => {
+    const home = temporaryHome()
+    const dir = ensureDesktopProfile(home)
+    const stale = join(dir, 'node_modules', DESKTOP_PACKAGE_NAME)
+    if (lstatSync(stale).isSymbolicLink()) unlinkSync(stale)
+    mkdirSync(stale, { recursive: true })
+    writeFileSync(join(stale, 'package.json'), JSON.stringify({ name: DESKTOP_PACKAGE_NAME, version: '0.0.0-stale' }))
+
+    ensureDesktopProfile(home)
+
+    const stat = lstatSync(stale)
+    expect(stat.isSymbolicLink()).toBe(true)
+    expect(readlinkSync(stale)).toBe(dirnameOfInstallAnchor())
   })
 
   it('rejects malformed persistent bundle metadata', () => {
@@ -139,6 +162,12 @@ describe('desktop profile composition', () => {
     }))
     expect(rows.find(row => row.id === 'desktop-updates')).toEqual(expect.objectContaining({
       name: 'dsh-plugin-desktop/updates',
+    }))
+    expect(rows.find(row => row.id === 'desktop-memory-web')).toEqual(expect.objectContaining({
+      name: 'dsh-plugin-desktop/memory-web',
+    }))
+    expect(rows.find(row => row.id === 'knowledge-web')).toEqual(expect.objectContaining({
+      name: 'dsh-plugin-desktop/knowledge-web',
     }))
     expect(rows.find(row => row.id === 'desktop-profiles')).toEqual(expect.objectContaining({
       name: 'dsh-plugin-desktop/profiles',

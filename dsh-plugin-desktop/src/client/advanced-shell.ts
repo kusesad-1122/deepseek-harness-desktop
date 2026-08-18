@@ -1,5 +1,4 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from './contracts.ts'
 import type { DesktopClientEnvironment } from './environment.ts'
@@ -71,7 +70,6 @@ export function applyAdvancedShell(ctx: ClientContext, environment: DesktopClien
       inject: () => ({
         t: extendedT,
         layout: desktopLayout,
-        openSession: (id: SessionId) => { ctx.sessions.open(id) },
       }),
     }, ExtendedPanel))
   }, 'desktop: extended panel')

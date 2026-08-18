@@ -1,7 +1,7 @@
 /** Compatibility profile composition over the official Web bundle and user plugins. */
 
 import { createRequire } from 'node:module'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { evaluate, isJsExpr, type EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
@@ -153,7 +153,7 @@ export function desktopBundleList(current: readonly string[]): string[] {
     && name !== DESKTOP_PACKAGE_NAME
     && name !== DESKTOP_MEMORY_WEB_BUNDLE,
   )
-  return [...REQUIRED_BUNDLES, DESKTOP_MEMORY_WEB_BUNDLE, ...thirdParty]
+  return [...REQUIRED_BUNDLES, ...thirdParty]
 }
 
 /** Return whether two ordered string lists are identical. */
@@ -169,7 +169,7 @@ function sameList(left: readonly string[], right: readonly string[]): boolean {
 export function ensureDesktopProfile(home: string = resolveDshHome()): string {
   const dir = resolveProfileDir(DESKTOP_PROFILE_NAME, home)
   if (!existsSync(join(dir, 'package.json'))) initProfile(dir, REQUIRED_BUNDLES)
-  const manifest = readProfileManifest(BIN_NAME, dir)
+  let manifest = readProfileManifest(BIN_NAME, dir)
   const rawBundles = (manifest.dsh?.profile as { bundles?: unknown } | undefined)?.bundles
   if (rawBundles !== undefined
     && (!Array.isArray(rawBundles) || rawBundles.some(value => typeof value !== 'string'))) {
@@ -178,7 +178,7 @@ export function ensureDesktopProfile(home: string = resolveDshHome()): string {
   const current = rawBundles === undefined ? [] : rawBundles as string[]
   const bundles = desktopBundleList(current)
   if (!sameList(current, bundles)) {
-    writeProfileManifest(dir, {
+    manifest = {
       ...manifest,
       dsh: {
         ...manifest.dsh,
@@ -187,19 +187,46 @@ export function ensureDesktopProfile(home: string = resolveDshHome()): string {
           bundles,
         },
       },
-    })
+    }
+    writeProfileManifest(dir, manifest)
   }
+  healDesktopPackageLink(dir)
   // Ensure the desktop package itself is resolvable from the profile's
   // node_modules so the renderer can load the renderer-side memory plugin
   // (`dsh-plugin-desktop/memory-web`) into the user's actual agent runtime.
   const dependencies = { ...manifest.dependencies }
   if (dependencies[DESKTOP_PACKAGE_NAME] === undefined) {
     dependencies[DESKTOP_PACKAGE_NAME] = `file:${dirname(INSTALL_ANCHOR)}`
-    writeProfileManifest(dir, { ...manifest, dependencies } as ProfileManifest)
+    manifest = { ...manifest, dependencies }
+    writeProfileManifest(dir, manifest)
   }
   return dir
 }
 
+/**
+ * Make the launcher-owned desktop package resolve to the current installation.
+ * pnpm may leave a physical copy under a profile after an upgrade; that copy
+ * shadows the new app bundle and makes the renderer load an old client.js.
+ */
+function healDesktopPackageLink(profileDir: string): void {
+  const link = join(profileDir, 'node_modules', DESKTOP_PACKAGE_NAME)
+  const target = dirname(INSTALL_ANCHOR)
+  mkdirSync(dirname(link), { recursive: true })
+  try {
+    const stat = lstatSync(link)
+    if (stat.isSymbolicLink()) {
+      if (readlinkSync(link) === target) return
+      // Do not recurse through a stale junction: only delete its reparse point.
+      unlinkSync(link)
+    } else {
+      // This path is launcher-owned: a stale package copy can never be a user bundle.
+      rmSync(link, { recursive: true, force: true })
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+}
 /** Resolve the agent presets shipped by the matching dsh CLI dependency. */
 function shippedPresetRoot(): string {
   const require = createRequire(import.meta.url)

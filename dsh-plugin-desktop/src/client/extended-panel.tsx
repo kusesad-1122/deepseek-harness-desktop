@@ -5,14 +5,13 @@
  */
 
 import { createElement as h, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SessionId } from '@deepseek-ai/dsh-client-connection/client'
 import type { DesktopLayoutService } from './contracts.ts'
 import {
   deleteKnowledgeCard, fetchDailyNews, fetchKnowledgeState, relativeTime,
 } from './knowledge-client.ts'
 import type { DailyNewsFeedView, KnowledgeCardView } from './knowledge-client.ts'
-import type { SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 
 export interface ExtendedTranslate {
   (key: string): string
@@ -22,14 +21,12 @@ export interface ExtendedTranslate {
 export interface ExtendedPanelInjected {
   t: ExtendedTranslate
   layout: DesktopLayoutService
-  /** Open one session from the 对话 section. */
-  openSession: (id: SessionId) => void
 }
 
 export type ExtendedPanelProps = PropsRuntime<'panel.extended'> & ExtendedPanelInjected
 
 type ProjectId = 'conversation' | 'knowledge' | 'news' | 'graph' | 'expert'
-type PanelView = 'home' | ProjectId
+type PanelView = ProjectId
 
 const knowledgePollMs = 5_000
 
@@ -97,45 +94,18 @@ const projectButton: React.CSSProperties = {
   padding: '10px 12px', borderRadius: 8, border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
   background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer', font: 'inherit',
 }
+const projectButtonActive: React.CSSProperties = { ...projectButton, borderColor: 'var(--dsh-color-accent, #4c8bf5)', background: 'var(--dsh-color-surface-muted, rgba(127,127,127,0.12))' }
+const backButton: React.CSSProperties = { width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', borderRadius: 6, background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 18, padding: 0 }
 const projectIcon: React.CSSProperties = { width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }
 const projectCopy: React.CSSProperties = { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }
 const projectLabel: React.CSSProperties = { fontSize: 13, fontWeight: 650 }
 const projectDescription: React.CSSProperties = { color: 'var(--dsh-color-text-muted, #888)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 const projectContent: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }
-const headerLeft: React.CSSProperties = { minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }
-const backButton: React.CSSProperties = { width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: 6, background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 16, padding: 0 }
 
 function fmt(t: ExtendedTranslate, key: string, vars: Record<string, string | number>): string {
   let text = t(key)
   for (const [name, value] of Object.entries(vars)) text = text.replaceAll(`{${name}}`, String(value))
   return text
-}
-
-/** 对话 — recent sessions from the global sessions feed. */
-function ConversationSection(props: { t: ExtendedTranslate; openSession: (id: SessionId) => void; useSessions: ExtendedPanelProps['useSessions'] }): React.ReactNode {
-  const { t, openSession, useSessions } = props
-  const sessions = useSessions((state: SessionListState) => state)
-  const rows = sessions.ids
-    .map((id) => ({ id, summary: sessions.byId[id] }))
-    .filter((row) => row.summary !== undefined)
-    .sort((a, b) => b.summary!.updatedAt - a.summary!.updatedAt)
-    .slice(0, 12)
-  if (rows.length === 0) return h('p', { style: muted }, t('conversationEmpty'))
-  return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-    ...rows.map(({ id, summary }) => {
-      const active = id === sessions.current
-      const sessionSummary = summary!
-      return h('button', {
-        key: id,
-        type: 'button',
-        style: active ? cardRowActive : cardRow,
-        onClick: () => { openSession(id) },
-      },
-      h('div', { style: { fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, sessionSummary.displayTitle),
-      h('div', { style: muted }, `${sessionSummary.running ? `${t('conversationRunning')} · ` : ''}${relativeTime(Date.now(), sessionSummary.updatedAt)}`),
-      )
-    }),
-  )
 }
 
 /** 知识卡 — knowledge base: search, list, detail, delete. */
@@ -435,8 +405,8 @@ function ExpertStyleSection(props: { t: ExtendedTranslate }): React.ReactNode {
 }
 
 /** Render the extension project home menu. */
-function ProjectMenu(props: { t: ExtendedTranslate; open: (id: ProjectId) => void }): React.ReactNode {
-  const { t, open } = props
+function ProjectMenu(props: { t: ExtendedTranslate; active: PanelView; open: (id: ProjectId) => void }): React.ReactNode {
+  const { t, active, open } = props
   const projects: Array<{ id: ProjectId; icon: string; label: string; description: string }> = [
     { id: 'conversation', icon: '💬', label: t('conversationTitle'), description: t('conversationProjectDesc') },
     { id: 'knowledge', icon: '📇', label: t('knowledgeTitle'), description: t('knowledgeProjectDesc') },
@@ -447,7 +417,7 @@ function ProjectMenu(props: { t: ExtendedTranslate; open: (id: ProjectId) => voi
   return h('div', { style: projectContent }, ...projects.map((project) => h('button', {
     key: project.id,
     type: 'button',
-    style: projectButton,
+    style: project.id === active ? projectButtonActive : projectButton,
     onClick: () => { open(project.id) },
   },
   h('span', { style: projectIcon, 'aria-hidden': true }, project.icon),
@@ -460,18 +430,96 @@ function ProjectMenu(props: { t: ExtendedTranslate; open: (id: ProjectId) => voi
 }
 
 function projectTitle(t: ExtendedTranslate, view: PanelView): string {
-  if (view === 'conversation') return t('conversationTitle')
   if (view === 'knowledge') return t('knowledgeTitle')
   if (view === 'news') return t('dailyNewsTitle')
   if (view === 'graph') return t('graphTitle')
   if (view === 'expert') return t('expertTitle')
-  return t('nav')
+  return t('conversationTitle')
 }
 
-/** Focused project navigator; collapsed mode keeps direct shortcuts. */
+function projectPageLeft(width: number): number {
+  const root = document.getElementById('root')
+  const rootLeft = root?.getBoundingClientRect().left ?? 0
+  const frame = root?.querySelector('.dshDesktopFrame')
+  const extended = frame?.querySelector('.dshDesktopExtendedSurface')
+  const extendedWidth = extended?.getBoundingClientRect().width ?? 0
+  const sidebarSlot = root?.querySelector('[data-slot="sidebar"]')
+  const sidebarColumn = sidebarSlot?.parentElement
+  const sidebarWidth = sidebarColumn?.getBoundingClientRect().width ?? 280
+  // Leave both the extension dock and the ordinary conversation sidebar visible.
+  return Math.max(width, rootLeft + extendedWidth + sidebarWidth)
+}
+
+function useProjectPageLeft(width: number, view: PanelView): number {
+  const [left, setLeft] = useState(width)
+  useEffect(() => {
+    if (view === 'conversation') return
+    const update = (): void => { setLeft(projectPageLeft(width)) }
+    update()
+    window.addEventListener('resize', update)
+    const root = document.getElementById('root')
+    const observer = typeof ResizeObserver === 'undefined' || root === null
+      ? undefined
+      : new ResizeObserver(update)
+    if (observer !== undefined && root !== null) observer.observe(root)
+    return () => {
+      window.removeEventListener('resize', update)
+      observer?.disconnect()
+    }
+  }, [view, width])
+  return left
+}
+
+function DesktopProjectPage(props: {
+  t: ExtendedTranslate
+  view: Exclude<PanelView, 'conversation'>
+  left: number
+  onBack: () => void
+}): React.ReactNode {
+  const { t, view, left, onBack } = props
+  const content = view === 'knowledge'
+    ? h(KnowledgeSection, { t })
+    : view === 'news'
+      ? h(DailyNewsSection, { t })
+      : view === 'graph'
+        ? h(KnowledgeGraphSection, { t })
+        : h(ExpertStyleSection, { t })
+  return h('div', {
+    className: 'dshDesktopProjectPage',
+    style: {
+      position: 'fixed', left, top: 0, right: 0, bottom: 0, zIndex: 900,
+      display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      background: 'var(--dsw-alias-bg-base, #fff)', color: 'var(--dsw-alias-fg-base, inherit)',
+    },
+  },
+  h('header', {
+    style: {
+      minHeight: 52, boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: 10,
+      padding: '10px 24px', borderBottom: '1px solid var(--dsh-color-border, rgba(127,127,127,0.28))',
+    },
+  },
+  h('button', {
+    type: 'button', title: t('back'), 'aria-label': t('back'), style: backButton,
+    onClick: onBack,
+  }, '‹'),
+  h('h1', { style: { fontSize: 18, fontWeight: 700, margin: 0 } }, projectTitle(t, view)),
+  ),
+  h('main', {
+    style: {
+      flex: '1 1 auto', overflowY: 'auto', padding: '28px 32px 48px',
+      display: 'flex', justifyContent: 'flex-start',
+    },
+  },
+  h('div', { style: { width: 'min(100%, 960px)', display: 'flex', flexDirection: 'column', gap: 12 } }, content),
+  ),
+  )
+}
+
+/** Left project navigator; non-conversation projects render as full main pages. */
 export function ExtendedPanel(props: ExtendedPanelProps): React.ReactNode {
-  const { t, layout, openSession, collapsed, useSessions } = props
-  const [view, setView] = useState<PanelView>('home')
+  const { t, layout, collapsed, width = 300 } = props
+  const [view, setView] = useState<PanelView>('conversation')
+  const pageLeft = useProjectPageLeft(width, view)
   const projects: Array<{ id: ProjectId; icon: string; label: string }> = [
     { id: 'conversation', icon: '💬', label: t('conversationTitle') },
     { id: 'knowledge', icon: '📇', label: t('knowledgeTitle') },
@@ -479,40 +527,34 @@ export function ExtendedPanel(props: ExtendedPanelProps): React.ReactNode {
     { id: 'graph', icon: '◉', label: t('graphTitle') },
     { id: 'expert', icon: '◎', label: t('expertTitle') },
   ]
+  const open = (project: ProjectId): void => { setView(project) }
 
-  if (collapsed) return h('div', { style: railStyle, role: 'navigation', 'aria-label': t('nav') },
-    ...projects.map((project) => h('button', {
-      key: project.id,
-      type: 'button',
-      title: project.label,
-      'aria-label': project.label,
-      style: view === project.id ? railButtonActive : railButton,
-      onClick: () => { setView(project.id); layout.openExtended() },
-    }, project.icon)),
-  )
-
-  const content = view === 'home'
-    ? h(ProjectMenu, { t, open: setView })
-    : view === 'conversation'
-      ? h(ConversationSection, { t, openSession, useSessions })
-      : view === 'knowledge'
-        ? h(KnowledgeSection, { t })
-        : view === 'news'
-          ? h(DailyNewsSection, { t })
-          : view === 'graph'
-            ? h(KnowledgeGraphSection, { t })
-            : h(ExpertStyleSection, { t })
-
-  return h('div', { style: surface },
-    h('div', { style: headerRow },
-      h('div', { style: headerLeft },
-        view === 'home'
-          ? null
-          : h('button', { type: 'button', style: backButton, title: t('back'), 'aria-label': t('back'), onClick: () => { setView('home') } }, '‹'),
-        h('h2', { style: headerTitle }, projectTitle(t, view)),
+  const dock = collapsed
+    ? h('div', { style: railStyle, role: 'navigation', 'aria-label': t('nav') },
+      ...projects.map((project) => h('button', {
+        key: project.id, type: 'button', title: project.label, 'aria-label': project.label,
+        style: view === project.id ? railButtonActive : railButton,
+        onClick: () => { open(project.id); layout.openExtended() },
+      }, project.icon)),
+    )
+    : h('div', { style: surface },
+      h('div', { style: headerRow },
+        h('h2', { style: headerTitle }, t('nav')),
+        h('button', {
+          type: 'button', style: collapseButton, title: t('collapse'), 'aria-label': t('collapse'),
+          onClick: () => { layout.toggleExtended() },
+        }, '«'),
       ),
-      h('button', { type: 'button', style: collapseButton, title: t('collapse'), 'aria-label': t('collapse'), onClick: () => { layout.toggleExtended() } }, '«'),
-    ),
-    h('div', { style: body }, content),
-  )
+      h('div', { style: body },
+        h(ProjectMenu, { t, active: view, open }),
+      ),
+    )
+
+  if (view === 'conversation') return dock
+  return h('div', {}, dock, createPortal(
+    h(DesktopProjectPage, {
+      t, view, left: pageLeft, onBack: () => { setView('conversation') },
+    }),
+    document.body,
+  ))
 }

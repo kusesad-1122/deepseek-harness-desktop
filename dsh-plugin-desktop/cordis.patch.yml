@@ -30,6 +30,11 @@
         reviewTimeoutMs: 60000
         reviewMaxDigestChars: 8000
         reviewMaxOutputTokens: 512
+    # Renderer-side memory bridge; this is an exported subpath of the desktop package, not a profile bundle root.
+    - id: desktop-memory-web
+      name: dsh-plugin-desktop/memory-web
+    # Harness-side knowledge bundle: the `knowledge` tool plus auto-retrieval
+    # prompt injection, mounted beside the memory-web bundle.
     - id: desktop-knowledge
       name: dsh-plugin-desktop/knowledge
       config:

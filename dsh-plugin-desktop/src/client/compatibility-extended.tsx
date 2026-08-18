@@ -21,7 +21,7 @@
 
 import { createElement as h, useCallback, useEffect, useSyncExternalStore } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { DesktopClientEnvironment } from './environment.ts'
 import type {} from './contracts.ts'
 import { DesktopLayoutState, EXTENDED_COLLAPSED } from './layout-state.ts'
@@ -37,8 +37,6 @@ export interface CompatibilityExtendedInjected {
   t: ExtendedTranslate
   /** Desktop panel state; only the `extended` axis is consumed here. */
   layout: DesktopLayoutState
-  /** Open one session from the 对话 section. */
-  openSession: (id: SessionId) => void
 }
 
 export type CompatibilityExtendedProps = PropsRuntime<'shell.overlay'> & CompatibilityExtendedInjected
@@ -64,7 +62,7 @@ function dockStyle(width: number): React.CSSProperties {
  * margin so the upstream AppFrame never sits underneath it.
  */
 export function CompatibilityExtendedDock(props: CompatibilityExtendedProps): React.ReactNode {
-  const { t, layout, openSession, useSessions, useWorkspaces } = props
+  const { t, layout, useSessions, useWorkspaces } = props
   const subscribe = useCallback((listener: () => void) => layout.subscribe(listener), [layout])
   const readSnapshot = useCallback(() => layout.getSnapshot(), [layout])
   const snapshot = useSyncExternalStore(subscribe, readSnapshot)
@@ -92,7 +90,7 @@ export function CompatibilityExtendedDock(props: CompatibilityExtendedProps): Re
   }, [collapsed])
 
   return h('div', { className: 'dshDesktopCompatDock', style: dockStyle(width) },
-    h(ExtendedPanel, { t, layout, openSession, collapsed, width, useSessions, useWorkspaces }),
+    h(ExtendedPanel, { t, layout, collapsed, width, useSessions, useWorkspaces }),
   )
 }
 
@@ -137,7 +135,6 @@ export function applyCompatibilityExtended(ctx: ClientContext, environment: Desk
       inject: () => ({
         t: extendedT,
         layout: compatLayout,
-        openSession: (id: SessionId) => { ctx.sessions.open(id) },
       }),
     }, CompatibilityExtendedDock))
   }, 'desktop: compatibility extended dock')
