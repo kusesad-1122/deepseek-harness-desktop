@@ -30,14 +30,15 @@ export const KNOWLEDGE_DELETE_ROUTE = '/dsh-desktop/knowledge/cards/delete'
 export const DAILY_NEWS_ROUTE = '/dsh-desktop/news/daily'
 export const LEGACY_KNOWLEDGE_NEWS_ROUTE = '/dsh-desktop/knowledge/news'
 
-const DAILY_NEWS_SOURCE_API = 'https://60s.viki.moe/v2/60s'
-const DAILY_NEWS_SOURCE_NAME = '每天60秒读懂世界'
+const DAILY_NEWS_RSS_URL = 'https://news.google.com/rss/search?q=AI+%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD+%E5%A4%A7%E6%A8%A1%E5%9E%8B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans'
+const DAILY_NEWS_SOURCE_NAME = 'AI 每日热点'
 const DAILY_NEWS_CACHE_MS = 15 * 60 * 1000
 
 export interface DailyNewsItem {
   readonly id: string
   readonly title: string
   readonly url?: string
+  readonly cover?: string
   readonly publishedAt: string
 }
 
@@ -108,37 +109,42 @@ function normalizeCardInput(body: unknown): { title: string, summary: string, ta
   return { title, summary, tags }
 }
 
-/** Parse the bounded public daily-news response without trusting its fields. */
-export function parseDailyNewsPayload(input: unknown): DailyNewsFeed {
-  if (typeof input !== 'object' || input === null) throw new Error('daily news response is not an object')
-  const root = input as Record<string, unknown>
-  const data = root.data
-  if (root.code !== 200 || typeof data !== 'object' || data === null) {
-    throw new Error('daily news source did not return success')
+/** Extract text content from an XML element by tag name. */
+function xmlText(xml: string, tag: string): string {
+  const m = xml.match(new RegExp('<' + tag + '[^>]*>([\\s\\S]*?)</' + tag + '>'))
+  return m?.[1]?.replace(/<!\[CDATA\[|\]\]>/g, '').trim() ?? ''
+}
+
+/** Extract an attribute value from the first matching tag. */
+function xmlAttr(xml: string, tag: string, attr: string): string {
+  const m = xml.match(new RegExp('<' + tag + '[^>]*?' + attr + '="([^"]*)"', 's'))
+  return m?.[1] ?? ''
+}
+
+/** Parse a Google News RSS feed into a DailyNewsFeed. */
+export function parseDailyNewsRss(xml: string, limit = 10): DailyNewsFeed {
+  const pubDate = xmlText(xml, 'lastBuildDate')
+  const items: DailyNewsItem[] = []
+  const itemRegex = /<item>([\s\S]*?)<\/item>/g
+  let match: RegExpExecArray | null
+  while ((match = itemRegex.exec(xml)) !== null && items.length < limit) {
+    const block = match[1]
+    if (block === undefined) continue
+    const title = xmlText(block, 'title')
+    if (!title) continue
+    const link = xmlText(block, 'link')
+    const pub = xmlText(block, 'pubDate')
+    const cover = xmlAttr(block, 'media:content', 'url')
+    items.push({
+      id: String(items.length + 1),
+      title,
+      ...(link ? { url: link } : {}),
+      ...(cover ? { cover } : {}),
+      publishedAt: new Date(pub || Date.now()).toISOString(),
+    })
   }
-  const record = data as Record<string, unknown>
-  const date = typeof record.date === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(record.date)
-    ? record.date
-    : new Date().toISOString().slice(0, 10)
-  const sourceUrl = typeof record.link === 'string' && record.link.startsWith('https://')
-    ? record.link
-    : 'https://github.com/vikiboss/60s'
-  const publishedAt = `${date}T00:00:00.000Z`
-  const news = Array.isArray(record.news)
-    ? record.news.filter((item): item is string => typeof item === 'string' && item.trim() !== '').slice(0, 20)
-    : []
-  if (news.length === 0) throw new Error('daily news source returned no headlines')
-  return {
-    date,
-    source: DAILY_NEWS_SOURCE_NAME,
-    sourceUrl,
-    items: news.map((title, index) => ({
-      id: `${date}-${String(index + 1)}`,
-      title: title.trim(),
-      url: sourceUrl,
-      publishedAt,
-    })),
-  }
+  if (items.length === 0) throw new Error('AI news RSS returned no headlines')
+  return { date: pubDate || new Date().toISOString(), source: DAILY_NEWS_SOURCE_NAME, sourceUrl: 'https://news.google.com/search?q=AI+artificial+intelligence&hl=zh-CN', items }
 }
 
 /** Load and cache the fixed daily-hot-news feed; stale cache survives a transient source failure. */
@@ -148,12 +154,12 @@ export async function loadDailyNews(forceRefresh = false): Promise<DailyNewsFeed
     return dailyNewsCache.feed
   }
   try {
-    const response = await fetch(DAILY_NEWS_SOURCE_API, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(8_000),
+    const response = await fetch(DAILY_NEWS_RSS_URL, {
+      headers: { accept: 'application/rss+xml, application/xml, text/xml' },
+      signal: AbortSignal.timeout(10_000),
     })
-    if (!response.ok) throw new Error(`daily news source returned ${String(response.status)}`)
-    const feed = parseDailyNewsPayload(await response.json())
+    if (!response.ok) throw new Error(`AI news source returned ${String(response.status)}`)
+    const feed = parseDailyNewsRss(await response.text())
     dailyNewsCache = { expiresAt: now + DAILY_NEWS_CACHE_MS, feed }
     return feed
   } catch (error) {

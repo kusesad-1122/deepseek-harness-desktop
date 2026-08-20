@@ -266,11 +266,18 @@ function DailyNewsSection(props: { t: ExtendedTranslate }): React.ReactNode {
         onClick: () => { void refresh(true) },
       }, busy ? t('dailyNewsRefreshing') : t('dailyNewsRefresh')),
     ),
-    h('ol', { style: { margin: 0, paddingLeft: 22, display: 'flex', flexDirection: 'column', gap: 8 } },
-      ...feed.items.map((item) => h('li', { key: item.id, style: { paddingLeft: 2 } },
+    h('ol', { style: { margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 10 } },
+      ...feed.items.map((item) => h('li', { key: item.id, style: { display: 'flex', gap: 10, alignItems: 'flex-start' } },
+        item.cover ? h('a', {
+          href: item.url ?? feed.sourceUrl, target: '_blank', rel: 'noreferrer',
+          style: { flex: '0 0 80px', height: 54, borderRadius: 6, overflow: 'hidden' },
+        }, h('img', {
+          src: item.cover, alt: '', loading: 'lazy',
+          style: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
+        })) : null,
         h('a', {
           href: item.url ?? feed.sourceUrl, target: '_blank', rel: 'noreferrer',
-          style: { fontSize: 12, lineHeight: 1.5, color: 'inherit', textDecoration: 'none' },
+          style: { flex: '1 1 auto', fontSize: 12, lineHeight: 1.5, color: 'inherit', textDecoration: 'none' },
         }, item.title),
       )),
     ),
@@ -443,11 +450,8 @@ function projectPageLeft(width: number): number {
   const frame = root?.querySelector('.dshDesktopFrame')
   const extended = frame?.querySelector('.dshDesktopExtendedSurface')
   const extendedWidth = extended?.getBoundingClientRect().width ?? 0
-  const sidebarSlot = root?.querySelector('[data-slot="sidebar"]')
-  const sidebarColumn = sidebarSlot?.parentElement
-  const sidebarWidth = sidebarColumn?.getBoundingClientRect().width ?? 280
-  // Leave both the extension dock and the ordinary conversation sidebar visible.
-  return Math.max(width, rootLeft + extendedWidth + sidebarWidth)
+  // Non-conversation project pages start right after the dock.
+  return Math.max(width, rootLeft + extendedWidth)
 }
 
 function useProjectPageLeft(width: number, view: PanelView): number {
@@ -457,15 +461,7 @@ function useProjectPageLeft(width: number, view: PanelView): number {
     const update = (): void => { setLeft(projectPageLeft(width)) }
     update()
     window.addEventListener('resize', update)
-    const root = document.getElementById('root')
-    const observer = typeof ResizeObserver === 'undefined' || root === null
-      ? undefined
-      : new ResizeObserver(update)
-    if (observer !== undefined && root !== null) observer.observe(root)
-    return () => {
-      window.removeEventListener('resize', update)
-      observer?.disconnect()
-    }
+    return () => { window.removeEventListener('resize', update) }
   }, [view, width])
   return left
 }
@@ -527,6 +523,15 @@ export function ExtendedPanel(props: ExtendedPanelProps): React.ReactNode {
     { id: 'graph', icon: '◉', label: t('graphTitle') },
     { id: 'expert', icon: '◎', label: t('expertTitle') },
   ]
+  useEffect(() => {
+    if (view === 'conversation') {
+      document.body.removeAttribute('data-dsh-desktop-project')
+    } else {
+      document.body.dataset.dshDesktopProject = view
+    }
+    return () => { document.body.removeAttribute('data-dsh-desktop-project') }
+  }, [view])
+
   const open = (project: ProjectId): void => { setView(project) }
 
   const dock = collapsed

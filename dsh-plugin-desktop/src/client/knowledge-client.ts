@@ -55,6 +55,7 @@ export interface DailyNewsItemView {
   readonly id: string
   readonly title: string
   readonly url?: string
+  readonly cover?: string
   readonly publishedAt: string
 }
 
@@ -154,4 +155,5 @@ function isDailyNewsItem(value: unknown): value is DailyNewsItemView {
     && typeof item.title === 'string'
     && typeof item.publishedAt === 'string'
     && (item.url === undefined || typeof item.url === 'string')
+    && (item.cover === undefined || typeof item.cover === 'string')
 }

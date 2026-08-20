@@ -81,6 +81,11 @@ const COMPATIBILITY_STYLES = `
 }
 body[data-dsh-desktop-mode="compatibility"] #root { transition: margin-left var(--ds-transition-duration-slow, 180ms) ease; }
 @media (prefers-reduced-motion: reduce) { body[data-dsh-desktop-mode="compatibility"] #root { transition: none !important; } }
+
+/* Hide upstream sidebar when a non-conversation project is active. */
+body[data-dsh-desktop-project]:not([data-dsh-desktop-project="conversation"]) [data-slot="sidebar"] {
+  display: none !important;
+}
 `
 
 /** Install and remove the compatibility shell's left-dock styles. @returns the style disposer. */

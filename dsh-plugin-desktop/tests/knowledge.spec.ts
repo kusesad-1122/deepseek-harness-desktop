@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { KnowledgeStore, parseDistillOutput, tokenizeQuery, type Config as KnowledgeConfig } from '../src/knowledge.ts'
 import { renderKnowledgeContext } from '../src/knowledge-web.ts'
-import { DAILY_NEWS_ROUTE, mountKnowledgeRoutes, parseDailyNewsPayload } from '../src/knowledge-routes.ts'
+import { DAILY_NEWS_ROUTE, mountKnowledgeRoutes, parseDailyNewsRss } from '../src/knowledge-routes.ts'
 import { supportsEffort } from '../src/reasoning-default.ts'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -170,14 +170,14 @@ describe('daily hot news route', () => {
     dispose()
   })
 
-  it('validates and bounds the public daily-news response', () => {
-    const feed = parseDailyNewsPayload({
-      code: 200,
-      data: { date: '2026-08-18', link: 'https://news.example/daily', news: ['Headline A', '', 'Headline B'] },
-    })
-    expect(feed.source).toBe('每天60秒读懂世界')
-    expect(feed.items.map(item => item.title)).toEqual(['Headline A', 'Headline B'])
-    expect(() => parseDailyNewsPayload({ code: 500 })).toThrow('did not return success')
+  it('parses AI RSS feed into a daily news feed', () => {
+    const xml = '<rss><channel><lastBuildDate>Tue, 18 Aug 2026 12:00:00 GMT</lastBuildDate><item><title><![CDATA[AI News 1]]></title><link>https://example.com/1</link><pubDate>Tue, 18 Aug 2026 11:00:00 GMT</pubDate><media:content url="https://img.example/1.jpg" type="image/jpeg"/></item><item><title>AI News 2</title><link>https://example.com/2</link><pubDate>Tue, 18 Aug 2026 10:00:00 GMT</pubDate></item></channel></rss>'
+    const feed = parseDailyNewsRss(xml)
+    expect(feed.source).toBe('AI 每日热点')
+    expect(feed.items).toHaveLength(2)
+    expect(feed.items[0]).toEqual(expect.objectContaining({ title: 'AI News 1', url: 'https://example.com/1', cover: 'https://img.example/1.jpg' }))
+    expect(feed.items[1]?.cover).toBeUndefined()
+    expect(() => parseDailyNewsRss('<rss></rss>')).toThrow('no headlines')
   })
 })
 
