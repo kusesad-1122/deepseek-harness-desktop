@@ -59,6 +59,22 @@
       "types": "./lib/types/desktop-plugins.d.ts",
       "default": "./lib/desktop-plugins.js"
     },
+    "./memory": {
+      "types": "./lib/types/memory.d.ts",
+      "default": "./lib/memory.js"
+    },
+    "./knowledge": {
+      "types": "./lib/types/knowledge.d.ts",
+      "default": "./lib/knowledge.js"
+    },
+    "./knowledge-web": {
+      "types": "./lib/types/knowledge-web.d.ts",
+      "default": "./lib/knowledge-web.js"
+    },
+    "./reasoning-default": {
+      "types": "./lib/types/reasoning-default.d.ts",
+      "default": "./lib/reasoning-default.js"
+    },
     "./profiles": {
       "types": "./lib/types/profiles.d.ts",
       "default": "./lib/profiles.js"
