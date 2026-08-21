@@ -1,3 +1,4 @@
+import { createElement as h } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -5,10 +6,16 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import { applyAdvancedShell } from './advanced-shell.ts'
+import { AboutPanel, type AboutTranslate } from './about-section.tsx'
+import { en as aboutEn, zh as aboutZh } from './about-locales.ts'
 import { startRendererBootReporter } from './boot-health.ts'
+import { applyCompatibilityExtended } from './compatibility-extended.tsx'
 import { applyDesktopSettings } from './desktop-settings.ts'
 import { installDesktopDirectoryPickerBridge, requestDesktopDirectoryValidation } from './directory-picker.ts'
 import { parseDesktopClientEnvironment } from './environment.ts'
+import { EXTENDED_NS, en as extendedEn, zh as extendedZh } from './extended-locales.ts'
+import { en as memoryEn, zh as memoryZh } from './memory-locales.ts'
+import { MemoryPanel, type MemoryTranslate } from './memory-section.tsx'
 import { installWorkspaceFolderDrop } from './workspace-folder-drop.ts'
 
 export { applyAdvancedShell } from './advanced-shell.ts'
@@ -62,11 +69,50 @@ export const inject = [
   'workspaces',
 ]
 
+const MEMORY_NS = 'dsh-desktop-memory'
+const ABOUT_NS = 'dsh-desktop-about'
+
+interface MemoryLocaleService {
+  register(namespace: string, dicts: { zh: Record<string, string>, en: Record<string, string> }): unknown
+  bind(namespace: string): MemoryTranslate
+}
+
+interface MemorySlotsService {
+  inject(slot: string, register: () => unknown): void
+  register(meta: Record<string, unknown>, component: (props?: unknown) => unknown): unknown
+}
+
 /** Register desktop-owned client surfaces for the current BrowserWindow mode. @param ctx - browser Cordis context. */
 export function apply(ctx: ClientContext): void {
   const environment = parseDesktopClientEnvironment(window.location.search)
   if (!environment) return
   applyDesktopSettings(ctx, environment)
+
+  // Desktop-owned memory/about locales and settings sections (fork product surface).
+  const locale = ctx.locale as unknown as MemoryLocaleService
+  const slots = ctx.slots as unknown as MemorySlotsService
+  locale.register(MEMORY_NS, { zh: memoryZh, en: memoryEn })
+  locale.register(ABOUT_NS, { zh: aboutZh, en: aboutEn })
+  locale.register(EXTENDED_NS, { zh: extendedZh, en: extendedEn })
+  const t = locale.bind(MEMORY_NS)
+  const aboutT = locale.bind(ABOUT_NS) as AboutTranslate
+  slots.inject('settings.section', () => slots.register({
+    name: 'settings.section',
+    id: 'desktop-memory',
+    order: 35,
+    label: () => t('nav'),
+    locale: MEMORY_NS,
+    inject: () => ({ t }),
+  }, () => h(MemoryPanel, { t })))
+  slots.inject('settings.section', () => slots.register({
+    name: 'settings.section',
+    id: 'desktop-about',
+    order: 100,
+    label: () => aboutT('nav'),
+    locale: ABOUT_NS,
+    inject: () => ({ t: aboutT }),
+  }, () => h(AboutPanel, { t: aboutT })))
+
   ctx.effect(
     () => startRendererBootReporter(ctx.loader),
     'dsh-plugin-desktop: renderer boot health report',
@@ -87,5 +133,9 @@ export function apply(ctx: ClientContext): void {
       'dsh-plugin-desktop: native directory picker bridge',
     )
   }
-  if (environment.mode === 'advanced') applyAdvancedShell(ctx, environment)
+  if (environment.mode === 'advanced') {
+    applyAdvancedShell(ctx, environment)
+  } else {
+    applyCompatibilityExtended(ctx, environment)
+  }
 }

@@ -58,14 +58,15 @@ describe('memory store', () => {
     expect(store.currentEntries('memory')).toEqual(['Project uses tabs', 'User prefers terse replies'])
   })
 
-  it('keeps the snapshot frozen while writes land on disk immediately', async () => {
+  it('reflects live snapshot text while writes land on disk immediately', async () => {
     const { root, store } = await makeStore()
     await store.loadFromDisk()
     const before = store.snapshotText({ memory: true, user: true })
 
     const result = await store.applySingle('memory', { action: 'add', content: 'Runtime is pinned to 47f9438' })
     expect(result.success).toBe(true)
-    expect(store.snapshotText({ memory: true, user: true })).toBe(before)
+    expect(store.snapshotText({ memory: true, user: true })).not.toBe(before)
+    expect(store.snapshotText({ memory: true, user: true })).toContain('Runtime is pinned to 47f9438')
     expect(store.currentEntries('memory')).toEqual(['Runtime is pinned to 47f9438'])
     expect(await readFile(join(root, 'memory', 'MEMORY.md'), 'utf8')).toBe('Runtime is pinned to 47f9438')
   })
@@ -168,13 +169,14 @@ describe('memory store', () => {
 describe('memory Host plugin', () => {
   it('validates the packaged policy defaults', () => {
     expect(name).toBe('desktop-memory')
-    expect(inject).toEqual(['desktopProfiles'])
+    expect(inject).toEqual(['desktopProfiles', 'systemPrompt', 'tools', 'commands', 'llm'])
     expect(Config({} as MemoryConfig)).toEqual({
       memoryEnabled: true,
       userProfileEnabled: true,
       memoryCharLimit: 2200,
       userCharLimit: 1375,
       writeApproval: false,
+      autoKnowledgeFromMemory: true,
       reviewEnabled: true,
       reviewInterval: 6,
       reviewCooldownMs: 60_000,
@@ -190,7 +192,7 @@ describe('memory Host plugin', () => {
     await mkdir(join(root, 'memory'), { recursive: true })
     await writeFile(join(root, 'memory', 'MEMORY.md'), 'Seed entry', 'utf8')
 
-    const sections: Array<{ name: string, order: number, text: string }> = []
+    const sections: Array<{ name: string, order: number, text: string | (() => string) }> = []
     const tools: ToolDefinition[] = []
     const warnings: unknown[][] = []
     let disposer: (() => void) | undefined
@@ -201,7 +203,7 @@ describe('memory Host plugin', () => {
         select: async () => {},
       },
       systemPrompt: {
-        section: (section: { name: string, order: number, text: string }) => {
+        section: (section: { name: string, order: number, text: string | (() => string) }) => {
           sections.push(section)
           return () => {}
         },
@@ -228,7 +230,10 @@ describe('memory Host plugin', () => {
 
     expect(sections).toHaveLength(1)
     expect(sections[0]).toMatchObject({ name: 'memory', order: 300 })
-    expect(sections[0]!.text).toContain('Seed entry')
+    const sectionText = typeof sections[0]!.text === 'function'
+      ? (sections[0]!.text as () => string)()
+      : sections[0]!.text
+    expect(sectionText).toContain('Seed entry')
     expect(tools).toHaveLength(1)
     expect(tools[0]!.name).toBe('memory')
 
@@ -242,12 +247,12 @@ describe('memory Host plugin', () => {
   it('continues with an empty store when the profile memory directory cannot be created', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-memory-plugin-'))
     await writeFile(join(root, 'memory'), 'not a directory', 'utf8')
-    const sections: Array<{ name: string }> = []
+    const sections: Array<{ name: string; text?: string | (() => string) }> = []
     const tools: ToolDefinition[] = []
     const warnings: unknown[][] = []
     const ctx = {
       desktopProfiles: { current: { name: 'test', dir: root }, list: () => [], select: async () => {} },
-      systemPrompt: { section: (section: { name: string }) => { sections.push(section); return () => {} } },
+      systemPrompt: { section: (section: { name: string; text?: string | (() => string) }) => { sections.push(section); return () => {} } },
       tools: { register: (definition: ToolDefinition) => { tools.push(definition); return () => {} } },
       commands: { register: () => () => {} },
       on: () => () => {},
@@ -258,7 +263,13 @@ describe('memory Host plugin', () => {
 
     apply(ctx, defaultConfig)
     await vi.waitFor(() => { expect(tools).toHaveLength(1) })
-    expect(sections).toHaveLength(0)
+    // The store is empty after the failed load, but the dynamic section and tool
+    // still register so the feature can recover once the directory is fixed.
+    expect(sections).toHaveLength(1)
+    const emptyText = typeof sections[0]!.text === 'function'
+      ? (sections[0]!.text as () => string)()
+      : (sections[0]!.text ?? '')
+    expect(emptyText).not.toContain('Seed entry')
     expect(warnings).toHaveLength(1)
     await rm(root, { recursive: true, force: true })
   })

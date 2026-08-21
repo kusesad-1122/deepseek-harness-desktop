@@ -16,6 +16,37 @@
       name: dsh-plugin-desktop/pnpm
     - id: desktop-profiles
       name: dsh-plugin-desktop/profiles
+    - id: desktop-memory
+      name: dsh-plugin-desktop/memory
+      config:
+        memoryEnabled: true
+        userProfileEnabled: true
+        # Hermes write_approval gate: off by default; /memory approval on|off
+        # and the settings panel toggle it live. When on, every write (model
+        # tool AND background review) stages under memory/pending/ until the
+        # user approves it.
+        writeApproval: false
+        # Hermes L4 learning loop: detached background review every N user
+        # turns, one bounded LLM call, writes through the same guarded store.
+        reviewMaxDigestChars: 8000
+        reviewMaxOutputTokens: 512
+    - id: desktop-knowledge
+      name: dsh-plugin-desktop/knowledge
+      config:
+        # Structured knowledge cards ("structured B"): the durable, structured
+        # counterpart of MEMORY.md/USER.md. /distill 沉淀 the current session
+        # into cards; the harness auto-retrieves relevant cards per turn.
+        enabled: true
+        maxCards: 500
+        titleCharLimit: 80
+        retrieveTopK: 4
+        autoRetrieval: true
+    # Harness-side knowledge bundle: the `knowledge` tool plus auto-retrieval
+    # prompt injection, mounted beside the memory-web bundle.
+    - id: knowledge-web
+      name: dsh-plugin-desktop/knowledge-web
+    - id: desktop-reasoning-default
+      name: dsh-plugin-desktop/reasoning-default
     - id: desktop-updates
       name: dsh-plugin-desktop/updates
 
