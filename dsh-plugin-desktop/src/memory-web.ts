@@ -208,8 +208,12 @@ const REVIEW_SYSTEM_PROMPT = [
 export function apply(ctx: Context): void {
   void refresh()
 
-  // Snapshot refresh timer; lives for the plugin lifetime (one per app run).
-  setInterval(() => { void refresh() }, SNAPSHOT_REFRESH_MS)
+  // Scope the refresh timer to this renderer generation so reloads do not
+  // leave orphaned polling loops behind.
+  ctx.effect(() => {
+    const timer = setInterval(() => { void refresh() }, SNAPSHOT_REFRESH_MS)
+    return () => clearInterval(timer)
+  }, 'dsh-plugin-desktop: memory snapshot refresh')
 
   ctx.systemPrompt.section({
     name: 'memory',

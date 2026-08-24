@@ -159,6 +159,7 @@ function runPackagedPnpmShim() {
 
 function runFlatProfileDshEntry() {
   const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-flat-cli-smoke-'))
+  const isolatedHome = join(root, 'dsh-home')
   const desktopPackage = join(root, 'node_modules', 'dsh-plugin-desktop')
   const linkedAppBootPackage = join(root, 'node_modules', '@deepseek-ai', 'dsh-app-boot')
   const linkedAtomicWritePackage = join(root, 'node_modules', '@deepseek-ai', 'dsh-atomic-write')
@@ -176,7 +177,10 @@ function runFlatProfileDshEntry() {
       join(desktopPackage, 'lib', 'desktop-cli.js'),
       ['plugin', '--help'],
       undefined,
-      { DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' },
+      {
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        DSH_HOME: isolatedHome,
+      },
     )
   } finally {
     rmSync(root, { recursive: true, force: true })

@@ -33,8 +33,21 @@ export interface DesktopUpdateLifecycleOptions {
   readonly registerTrayItem: (item: DesktopTrayItem) => DesktopTrayItemRegistration
 }
 
+/** Renderer-safe live state for the About/update status surface. */
+export interface DesktopUpdateSnapshot {
+  readonly currentVersion: string
+  readonly checking: boolean
+  readonly downloadingVersion: string | null
+  readonly downloadPercent: number | null
+  readonly available: { readonly version: string } | null
+}
+
 /** Lifecycle handle for one generation's update operations. */
 export interface DesktopUpdateLifecycle {
+  /** Run the same user-triggered check used by the native tray command. */
+  manualCheck(): Promise<void>
+  /** Read the current renderer-safe update state without exposing native adapters. */
+  snapshot(): DesktopUpdateSnapshot
   dispose(): Promise<void>
 }
 
@@ -79,6 +92,22 @@ class DesktopUpdateLifecycleOwner implements DesktopUpdateLifecycle {
     })
     if (options.adapter.isPackaged && options.policy.enabled) {
       this.scheduleBackgroundCheck(options.policy.initialDelayMs)
+    }
+  }
+
+  manualCheck(): Promise<void> {
+    return this.runManualCheck()
+  }
+
+  snapshot(): DesktopUpdateSnapshot {
+    return {
+      currentVersion: this.options.adapter.currentVersion,
+      checking: this.checking,
+      downloadingVersion: this.downloadingVersion ?? null,
+      downloadPercent: null,
+      available: this.availableVersion === undefined
+        ? null
+        : { version: this.availableVersion },
     }
   }
 

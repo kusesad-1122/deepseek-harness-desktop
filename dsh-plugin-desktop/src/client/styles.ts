@@ -74,7 +74,10 @@ const COMPATIBILITY_STYLES = `
   background: var(--dsw-alias-bg-base);
   border-right: 1px solid var(--dsw-alias-border-l1);
 }
-body[data-dsh-desktop-mode="compatibility"] #root { transition: margin-left var(--ds-transition-duration-slow, 180ms) ease; }
+body[data-dsh-desktop-mode="compatibility"] #root {
+  margin-left: var(--dsh-compat-root-offset, 0px);
+  transition: margin-left var(--ds-transition-duration-slow, 180ms) ease;
+}
 @media (prefers-reduced-motion: reduce) { body[data-dsh-desktop-mode="compatibility"] #root { transition: none !important; } }
 
 /* ── boujoy-fused workspace：现代办公主题（Codex gpt-5.6-terra 设计规范） ── */

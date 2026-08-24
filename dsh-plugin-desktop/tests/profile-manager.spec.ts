@@ -109,9 +109,15 @@ describe('desktop profile discovery', () => {
     ])
     writeProfile(home, 'broken', 'not-an-array')
     mkdirSync(join(home, 'profiles', 'node_modules'), { recursive: true })
+    let linked = false
+    try {
+      symlinkSync(webDir, join(home, 'profiles', 'linked-work'), 'dir')
+      linked = true
+    } catch { /* Windows may require an elevated symlink privilege. */ }
     const before = readFileSync(join(webDir, 'package.json'), 'utf8')
 
-    expect(listDesktopProfiles(home)).toEqual([
+    const profiles = listDesktopProfiles(home)
+    expect(profiles).toEqual([
       expect.objectContaining({ name: 'desktop', exists: false, webCapable: true }),
       expect.objectContaining({ name: 'web', exists: false, webCapable: true }),
       expect.objectContaining({ name: 'broken', exists: true, webCapable: false, problem: expect.any(String) }),
@@ -130,6 +136,7 @@ describe('desktop profile discovery', () => {
       }),
       expect.objectContaining({ name: 'wrong-order', exists: true, webCapable: false }),
     ])
+    if (linked) expect(profiles.some(profile => profile.name === 'linked-work')).toBe(false)
     expect(readFileSync(join(webDir, 'package.json'), 'utf8')).toBe(before)
     expect(readdirSync(join(home, 'profiles')).sort()).toEqual([
       'broken',

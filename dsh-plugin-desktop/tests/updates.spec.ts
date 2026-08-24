@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -18,6 +19,9 @@ const testConfig: UpdateConfig = {
   requestTimeoutMs: 1000,
 }
 
+const CHECK_ROUTE = '/dsh-desktop/updates/check'
+const STATE_ROUTE = '/dsh-desktop/updates/state'
+
 function versionResponse(version: unknown): Response {
   return Response.json({ version })
 }
@@ -32,7 +36,38 @@ interface Harness {
   readonly downloadAndOpen: ReturnType<typeof vi.fn>
   readonly refresh: ReturnType<typeof vi.fn>
   readonly registrationDispose: ReturnType<typeof vi.fn>
+  readonly routes: Map<string, {
+    handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>
+  }>
   dispose(): Promise<void>
+}
+
+interface CapturedResponse {
+  readonly response: ServerResponse
+  statusCode(): number | undefined
+  body(): unknown
+}
+
+function capturedResponse(): CapturedResponse {
+  let status: number | undefined
+  let payload: unknown
+  const response = {
+    writeHead: (nextStatus: number) => { status = nextStatus },
+    setHeader: () => {},
+    end: (body?: string | Uint8Array) => {
+      if (body === undefined) {
+        payload = undefined
+        return
+      }
+      const text = typeof body === 'string' ? body : Buffer.from(body).toString('utf8')
+      payload = JSON.parse(text) as unknown
+    },
+  } as unknown as ServerResponse
+  return {
+    response,
+    statusCode: () => status,
+    body: () => payload,
+  }
 }
 
 async function createHarness(options: {
@@ -57,6 +92,9 @@ async function createHarness(options: {
   const warnings: unknown[][] = []
   const refresh = vi.fn()
   const registrationDispose = vi.fn()
+  const routes = new Map<string, {
+    handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>
+  }>()
   const confirmDownload = vi.fn(options.confirmDownload ?? (async () => false))
   const showManualCheckResult = vi.fn(options.showManualCheckResult ?? (async () => {}))
   const downloadAndOpen = vi.fn(options.downloadAndOpen ?? (async () => {}))
@@ -83,6 +121,16 @@ async function createHarness(options: {
   const ctx = {
     desktopRuntime: runtime,
     logger: { warn: (...args: unknown[]) => { warnings.push(args) } },
+    webServer: {
+      register: (route: {
+        kind: 'exact' | 'prefix'
+        path: string
+        handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>
+      }) => {
+        routes.set(route.path, { handler: route.handler })
+        return () => { routes.delete(route.path) }
+      },
+    },
     effect: (register: () => (() => void | Promise<void>)) => {
       disposer = register()
       return disposer
@@ -101,6 +149,7 @@ async function createHarness(options: {
     downloadAndOpen,
     refresh,
     registrationDispose,
+    routes,
     dispose: async () => { await disposer?.() },
   }
 }
@@ -111,7 +160,7 @@ afterEach(() => {
 
 describe('desktop update Host plugin', () => {
   it('exposes the packaged 60-second and six-hour background policy', () => {
-    expect(inject).toEqual(['desktopRuntime'])
+    expect(inject).toEqual(['desktopRuntime', 'webServer'])
     expect(Config({} as UpdateConfig)).toEqual({
       enabled: true,
       initialDelayMs: 60_000,
@@ -126,6 +175,66 @@ describe('desktop update Host plugin', () => {
     const harness = await createHarness({ packaged: false, locale: 'zh' })
 
     expect(harness.tray.label()).toBe('检查更新…')
+
+    await harness.dispose()
+  })
+
+  it('registers a POST check route that triggers the same manual check as the tray', async () => {
+    const request = vi.fn(async () => versionResponse('2.1.0'))
+    const harness = await createHarness({ packaged: false, canDownload: false, request })
+    const response = capturedResponse()
+
+    await harness.routes.get(CHECK_ROUTE)?.handler(
+      { method: 'POST', headers: { origin: 'http://127.0.0.1:43120', host: '127.0.0.1:43120' } } as IncomingMessage,
+      response.response,
+    )
+
+    expect(response.statusCode()).toBe(200)
+    expect(response.body()).toEqual({ ok: true })
+    expect(request).toHaveBeenCalledOnce()
+    expect(harness.showManualCheckResult).toHaveBeenCalledWith({
+      status: 'update-available',
+      currentVersion: '2.0.0',
+      latestVersion: '2.1.0',
+    })
+
+    await harness.dispose()
+  })
+
+  it('rejects cross-origin update checks before starting network work', async () => {
+    const request = vi.fn(async () => versionResponse('2.1.0'))
+    const harness = await createHarness({ packaged: false, canDownload: false, request })
+    const response = capturedResponse()
+
+    await harness.routes.get(CHECK_ROUTE)?.handler(
+      { method: 'POST', headers: { origin: 'https://untrusted.example', host: '127.0.0.1:43120' } } as IncomingMessage,
+      response.response,
+    )
+
+    expect(response.statusCode()).toBe(403)
+    expect(response.body()).toEqual({ error: 'cross-origin rejected' })
+    expect(request).not.toHaveBeenCalled()
+
+    await harness.dispose()
+  })
+
+  it('returns the current update lifecycle state from the GET state route', async () => {
+    const harness = await createHarness({ packaged: false })
+    const response = capturedResponse()
+
+    await harness.routes.get(STATE_ROUTE)?.handler(
+      { method: 'GET', headers: {} } as IncomingMessage,
+      response.response,
+    )
+
+    expect(response.statusCode()).toBe(200)
+    expect(response.body()).toEqual({
+      currentVersion: '2.0.0',
+      checking: false,
+      downloadingVersion: null,
+      downloadPercent: null,
+      available: null,
+    })
 
     await harness.dispose()
   })

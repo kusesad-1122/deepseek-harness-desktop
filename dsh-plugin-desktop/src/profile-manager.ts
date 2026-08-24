@@ -242,7 +242,7 @@ export function listDesktopProfiles(home: string): DesktopProfileSummary[] {
   const summaries = new Map<string, DesktopProfileSummary>()
   try {
     for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
-      if (entry.name === 'node_modules' || (!entry.isDirectory() && !entry.isSymbolicLink())) continue
+      if (entry.name === 'node_modules' || !entry.isDirectory() || entry.isSymbolicLink()) continue
       try {
         assertDesktopProfileName(entry.name)
       } catch {

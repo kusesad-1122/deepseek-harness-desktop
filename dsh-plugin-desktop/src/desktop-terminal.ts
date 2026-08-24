@@ -408,14 +408,14 @@ function windowsCmdWelcome(): string {
   const pluginUpdate = 'dsh plugin update'
   return [
     '@echo off',
-    'setlocal EnableDelayedExpansion',
+    'setlocal DisableDelayedExpansion',
     `set "${RUN_AS_NODE}="`,
-    `cd /d "!${WINDOWS_PROFILE_DIRECTORY}!"`,
-    `echo(DSH Desktop !${WINDOWS_PRODUCT_VERSION}! terminal`,
-    `echo(Profile: !${DEFAULT_PROFILE}!`,
-    `echo(Profile directory: !${WINDOWS_PROFILE_DIRECTORY}!`,
-    `echo(Harness home: !${DSH_HOME}!`,
-    `echo(Plugin commands without --profile modify the !${DEFAULT_PROFILE}! profile.`,
+    `cd /d "%${WINDOWS_PROFILE_DIRECTORY}%"`,
+    `echo(DSH Desktop %${WINDOWS_PRODUCT_VERSION}% terminal`,
+    `echo(Profile: %${DEFAULT_PROFILE}%`,
+    `echo(Profile directory: %${WINDOWS_PROFILE_DIRECTORY}%`,
+    `echo(Harness home: %${DSH_HOME}%`,
+    `echo(Plugin commands without --profile modify the %${DEFAULT_PROFILE}% profile.`,
     'echo(Commands:',
     `echo(  ${escapeBatchText(commandHelp)}`,
     `echo(  ${escapeBatchText(pluginAdd)}`,
@@ -636,12 +636,12 @@ function windowsLaunchBroker(
   shell: ResolvedWindowsShell,
 ): string {
   const target = shell.kind === 'cmd'
-    ? `"!${WINDOWS_SHELL_EXECUTABLE}!" /D /K call "!${WINDOWS_CMD_WELCOME}!"`
-    : `"!${WINDOWS_SHELL_EXECUTABLE}!" -NoLogo -NoExit -ExecutionPolicy Bypass -File "!${WINDOWS_POWERSHELL_WELCOME}!"`
+    ? `"%${WINDOWS_SHELL_EXECUTABLE}%" /D /K call "%${WINDOWS_CMD_WELCOME}%"`
+    : `"%${WINDOWS_SHELL_EXECUTABLE}%" -NoLogo -NoExit -ExecutionPolicy Bypass -File "%${WINDOWS_POWERSHELL_WELCOME}%"`
   return [
     '@echo off',
-    'setlocal EnableDelayedExpansion',
-    `start "DSH Desktop" /D "!${WINDOWS_PROFILE_DIRECTORY}!" ${target}`,
+    'setlocal DisableDelayedExpansion',
+    `start "DSH Desktop" /D "%${WINDOWS_PROFILE_DIRECTORY}%" ${target}`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')

@@ -113,7 +113,7 @@ export async function downloadDesktopUpdate(options: DownloadDesktopUpdateOption
     response = await options.request(DESKTOP_DOWNLOAD_URLS[platform], {
       method: 'GET',
       cache: 'no-store',
-      redirect: 'follow',
+      redirect: 'error',
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     })
   } catch (cause) {
@@ -134,20 +134,38 @@ export async function downloadDesktopUpdate(options: DownloadDesktopUpdateOption
   assertDeclaredSize(response)
 
   let failure: unknown
+  let replacementBackup: string | undefined
   try {
     await writeResponseBody(paths.temporary, response.body, options.signal)
     throwIfAborted(options.signal)
     await validateArtifact(paths.temporary, platform)
     throwIfAborted(options.signal)
-    await unlinkIfPresent(paths.completed)
+    if (await lstatOptional(paths.completed) !== undefined) {
+      replacementBackup = join(dirname(paths.completed), `.${basename(paths.completed)}.${process.pid}.${randomUUID()}.previous`)
+      await rename(paths.completed, replacementBackup)
+    }
     await rename(paths.temporary, paths.completed)
+    if (replacementBackup !== undefined) {
+      await unlinkIfPresent(replacementBackup)
+      replacementBackup = undefined
+    }
     return paths.completed
   } catch (cause) {
     failure = options.signal?.aborted === true || isAbortFailure(cause) ? aborted(cause) : cause
+    if (replacementBackup !== undefined) {
+      try {
+        if (await lstatOptional(paths.completed) === undefined) await rename(replacementBackup, paths.completed)
+        else await unlinkIfPresent(replacementBackup)
+        replacementBackup = undefined
+      } catch (restoreCause) {
+        failure = new AggregateError([failure, restoreCause], 'Failed to restore the previous update installer.')
+      }
+    }
     throw failure
   } finally {
     try {
       await unlinkIfPresent(paths.temporary)
+      if (replacementBackup !== undefined) await unlinkIfPresent(replacementBackup)
     } catch (cleanupCause) {
       if (failure === undefined) throw cleanupCause
       throw new AggregateError([failure, cleanupCause], 'Failed to download and clean up the update installer.')

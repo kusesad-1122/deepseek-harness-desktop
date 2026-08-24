@@ -252,9 +252,10 @@ describe('desktop terminal environment', () => {
 
     expect(launch.windowsLauncherPath).toBe(join(stateDir, 'launch.cmd'))
     const launcher = readFileSync(launch.windowsLauncherPath!, 'utf8')
-    expect(launcher).toContain('start "DSH Desktop" /D "!DSH_DESKTOP_PROFILE_DIRECTORY!"')
-    expect(launcher).toContain('"!DSH_DESKTOP_SHELL_EXECUTABLE!" -NoLogo -NoExit')
-    expect(launcher).toContain('-File "!DSH_DESKTOP_POWERSHELL_WELCOME!"')
+    expect(launcher).toContain('setlocal DisableDelayedExpansion')
+    expect(launcher).toContain('start "DSH Desktop" /D "%DSH_DESKTOP_PROFILE_DIRECTORY%"')
+    expect(launcher).toContain('"%DSH_DESKTOP_SHELL_EXECUTABLE%" -NoLogo -NoExit')
+    expect(launcher).toContain('-File "%DSH_DESKTOP_POWERSHELL_WELCOME%"')
 
     expect(harness.calls).toEqual([{
       command: 'C:\\Windows\\System32\\cmd.exe',
@@ -357,13 +358,14 @@ describe('desktop terminal environment', () => {
     ])
     expect(harness.calls[0]?.options.shell).toBe(false)
     const welcome = readFileSync(join(stateDir, 'welcome.cmd'), 'utf8')
-    expect(welcome).toContain('setlocal EnableDelayedExpansion')
+    expect(welcome).toContain('setlocal DisableDelayedExpansion')
     expect(welcome).toContain('set "ELECTRON_RUN_AS_NODE="')
-    expect(welcome).toContain('cd /d "!DSH_DESKTOP_PROFILE_DIRECTORY!"')
-    expect(welcome).toContain('echo(Profile directory: !DSH_DESKTOP_PROFILE_DIRECTORY!')
+    expect(welcome).toContain('cd /d "%DSH_DESKTOP_PROFILE_DIRECTORY%"')
+    expect(welcome).toContain('echo(Profile directory: %DSH_DESKTOP_PROFILE_DIRECTORY%')
     const launcher = readFileSync(launch.windowsLauncherPath!, 'utf8')
-    expect(launcher).toContain('"!DSH_DESKTOP_SHELL_EXECUTABLE!" /D /K call')
-    expect(launcher).toContain('"!DSH_DESKTOP_CMD_WELCOME!"')
+    expect(launcher).toContain('setlocal DisableDelayedExpansion')
+    expect(launcher).toContain('"%DSH_DESKTOP_SHELL_EXECUTABLE%" /D /K call')
+    expect(launcher).toContain('"%DSH_DESKTOP_CMD_WELCOME%"')
   })
 
   it('prefers pwsh and reports broker errors and unsuccessful exits', () => {

@@ -30,6 +30,8 @@ import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-ll
 import { extractReviewDigest } from './memory-review.ts'
 import { mountKnowledgeRoutes } from './knowledge-routes.ts'
 import type {} from './profile-service.ts'
+import { UnifiedDb, defaultUnifiedDbPath } from './store/unified-db.ts'
+import { migrateFromFiles } from './store/migrate.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'desktop-knowledge'
@@ -151,6 +153,25 @@ function isEnoent(error: unknown): boolean {
   return isNodeError(error) && error.code === 'ENOENT'
 }
 
+function isValidKnowledgeCard(value: unknown): value is KnowledgeCard {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const card = value as Record<string, unknown>
+  return typeof card.id === 'string'
+    && card.id.length > 0
+    && typeof card.title === 'string'
+    && card.title.length > 0
+    && typeof card.summary === 'string'
+    && card.summary.length > 0
+    && Array.isArray(card.tags)
+    && card.tags.every(tag => typeof tag === 'string' && tag.length > 0)
+    && (card.source === 'manual' || card.source === 'distill' || card.source === 'model')
+    && typeof card.createdAt === 'string'
+    && Number.isFinite(Date.parse(card.createdAt))
+    && typeof card.updatedAt === 'string'
+    && Number.isFinite(Date.parse(card.updatedAt))
+    && Object.keys(card).every(key => ['id', 'title', 'summary', 'tags', 'source', 'createdAt', 'updatedAt'].includes(key))
+}
+
 /** Trim one untrusted text value without rejecting empty inputs. */
 function clean(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -201,29 +222,90 @@ export class KnowledgeStore {
   private cards: KnowledgeCard[] = []
   /** Serialized file-write chain: concurrent commits cannot interleave. */
   private writeQueue: Promise<void> = Promise.resolve()
+  private unifiedDb: UnifiedDb | null = null
 
   constructor(
     readonly dir: string,
     private readonly options: Config,
   ) {}
 
+  private async ensureUnifiedDb(): Promise<UnifiedDb | null> {
+    if (this.unifiedDb !== null && this.unifiedDb.isOpen()) return this.unifiedDb
+    try {
+      const profileDir = join(this.dir, '..')
+      const dbPath = defaultUnifiedDbPath(profileDir)
+      const db = new UnifiedDb(dbPath, {
+        memoryCharLimit: 2200,
+        userCharLimit: 1375,
+        maxCards: this.options.maxCards,
+      })
+      db.open()
+      await migrateFromFiles(profileDir, db)
+      this.unifiedDb = db
+      return db
+    } catch {
+      return null
+    }
+  }
+
+  private async mirrorCardToUnified(card: KnowledgeCard): Promise<void> {
+    const db = await this.ensureUnifiedDb()
+    if (db === null) return
+    try {
+      const existing = db.getKnowledgeCard(card.id)
+      if (existing !== undefined) {
+        try { db.updateKnowledgeCard(card.id, { title: card.title, summary: card.summary, tags: [...card.tags] }) } catch {}
+      } else {
+        // Title dedup may cause failure if another card has same title; treat as best-effort
+        try { db.addKnowledgeCard({ title: card.title, summary: card.summary, tags: [...card.tags], source: card.source }) } catch {}
+      }
+    } catch {}
+  }
+
+  private async mirrorDeleteToUnified(id: string): Promise<void> {
+    const db = await this.ensureUnifiedDb()
+    if (db === null) return
+    try { db.deleteKnowledgeCard(id) } catch {}
+  }
+
   /** Load the store document; a missing or unreadable file starts empty. */
   async loadFromDisk(): Promise<void> {
     await mkdir(this.dir, { recursive: true })
     const raw = await this.readRaw(join(this.dir, KNOWLEDGE_FILE))
-    if (raw.readFailed || raw.text.trim() === '') return
+    if (raw.readFailed || raw.text.trim() === '') {
+      // Even if file is empty, try to hydrate from unified DB (migration target)
+      try {
+        const db = await this.ensureUnifiedDb()
+        if (db !== null) {
+          const cards = db.listKnowledgeCards()
+          if (cards.length > 0) {
+            this.cards = cards.map(c => ({
+              id: c.id,
+              title: c.title,
+              summary: c.summary,
+              tags: [...c.tags],
+              source: c.source,
+              createdAt: c.createdAt,
+              updatedAt: c.updatedAt,
+            })).slice(0, this.options.maxCards)
+            return
+          }
+        }
+      } catch {}
+      return
+    }
     try {
       const parsed = JSON.parse(raw.text) as Partial<KnowledgeDocument>
       if (!Array.isArray(parsed.cards)) return
       const valid = parsed.cards.filter((card): card is KnowledgeCard => {
-        return card !== null
-          && typeof card === 'object'
-          && typeof card.id === 'string'
-          && typeof card.title === 'string'
-          && typeof card.summary === 'string'
-          && Array.isArray(card.tags)
+        return isValidKnowledgeCard(card)
       })
-      this.cards = valid.slice(0, this.options.maxCards)
+      this.cards = valid.map(card => ({ ...card, tags: [...card.tags] })).slice(0, this.options.maxCards)
+      // Hydrate unified DB in background (best-effort mirror)
+      void this.ensureUnifiedDb().then(async db => {
+        if (db === null) return
+        for (const card of this.cards) await this.mirrorCardToUnified(card)
+      })
     } catch {
       // Unreadable store never blocks boot: start empty.
     }
@@ -319,6 +401,12 @@ export class KnowledgeStore {
       updatedAt: now,
     }
     await this.commit([...this.cards, card], origin, 'added', title)
+    await this.mirrorCardToUnified(card)
+    // Also create an event for provenance in unified DB
+    try {
+      const db = await this.ensureUnifiedDb()
+      if (db !== null) db.addEvent({ type: 'knowledge_write', target: 'knowledge', payload: { action: 'add', id: card.id, title } })
+    } catch {}
     return {
       success: true,
       card,
@@ -398,6 +486,7 @@ export class KnowledgeStore {
 
   /** Persist the next card list atomically and refresh the in-memory state. */
   private async commit(next: KnowledgeCard[], origin: KnowledgeOrigin, outcome: string, title: string, id?: string): Promise<void> {
+    const previous = this.cards
     this.cards = next
     const document: KnowledgeDocument = { version: 1, cards: next }
     const serialized = `${JSON.stringify(document, null, 2)}\n`
@@ -405,10 +494,17 @@ export class KnowledgeStore {
     // Chain the file write: each commit carries the state captured at ITS
     // commit time, so serializing keeps the on-disk file converged with the
     // latest in-memory state even under concurrent writers.
-    this.writeQueue = this.writeQueue.then(async () => {
+    const writeTask = this.writeQueue.catch(() => {}).then(async () => {
       await writeFileAtomic(path, serialized, { mode: 0o600, dirMode: 0o700 })
     })
-    await this.writeQueue
+    this.writeQueue = writeTask.catch(() => {})
+    try {
+      await writeTask
+    } catch (error) {
+      // A failed durable write must not report a card that only exists in RAM.
+      if (this.cards === next) this.cards = previous
+      throw error
+    }
     await this.audit({ time: new Date().toISOString(), origin, outcome, title, ...(id === undefined ? {} : { id }) })
   }
 

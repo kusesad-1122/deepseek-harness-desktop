@@ -28,12 +28,15 @@ const defaultConfig: MemoryConfig = {
   reviewMaxOutputTokens: 512,
 }
 
-async function makeStore(limits: Partial<Pick<MemoryConfig, 'memoryCharLimit' | 'userCharLimit'>> = {}) {
+async function makeStore(
+  limits: Partial<Pick<MemoryConfig, 'memoryCharLimit' | 'userCharLimit'>> = {},
+  writeApproval = false,
+) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-memory-'))
   const store = new MemoryStore(join(root, 'memory'), {
     memoryCharLimit: limits.memoryCharLimit ?? defaultConfig.memoryCharLimit,
     userCharLimit: limits.userCharLimit ?? defaultConfig.userCharLimit,
-    writeApproval: false,
+    writeApproval,
   })
   return { root, store }
 }
@@ -163,6 +166,29 @@ describe('memory store', () => {
     await store.applySingle('memory', { action: 'add', content: 'a'.repeat(20) })
     expect(store.currentEntries('memory')).toHaveLength(1)
     expect(store.currentEntries('user')).toEqual(['Alice'])
+  })
+
+  it('ignores malformed pending records instead of throwing or sorting invalid dates', async () => {
+    const { root, store } = await makeStore({}, true)
+    await store.loadFromDisk()
+    const pending = join(root, 'memory', 'pending')
+    await mkdir(pending, { recursive: true })
+    await writeFile(join(pending, 'broken-json.json'), '{broken', 'utf8')
+    await writeFile(join(pending, 'wrong-shape.json'), JSON.stringify({
+      id: 'bad-id', target: 'memory', origin: 'foreground', createdAt: 'not-a-date', operations: 'nope',
+    }), 'utf8')
+
+    await expect(store.listPending()).resolves.toEqual([])
+  })
+
+  it('keeps a pending record when approval fails so it can be retried', async () => {
+    const { root, store } = await makeStore({ memoryCharLimit: 2 }, true)
+    await store.loadFromDisk()
+    const id = await store.stagePending('memory', [{ action: 'add', content: 'too long' }], 'foreground')
+
+    const result = await store.approvePending(id)
+    expect(result?.success).toBe(false)
+    await expect(readFile(join(root, 'memory', 'pending', `${id}.json`), 'utf8')).resolves.toContain(id)
   })
 })
 

@@ -1,11 +1,18 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { KnowledgeStore, parseDistillOutput, tokenizeQuery, type Config as KnowledgeConfig } from '../src/knowledge.ts'
 import { renderKnowledgeContext } from '../src/knowledge-web.ts'
-import { DAILY_NEWS_ROUTE, mountKnowledgeRoutes, parseDailyNewsRss } from '../src/knowledge-routes.ts'
+import {
+  DAILY_NEWS_ROUTE,
+  MAX_DAILY_NEWS_RESPONSE_BYTES,
+  WORKBUDDY_EXPERT_AVATAR_ROUTE,
+  mountKnowledgeRoutes,
+  parseDailyNewsRss,
+  readLimitedRssBody,
+} from '../src/knowledge-routes.ts'
 import { supportsEffort } from '../src/reasoning-default.ts'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -17,7 +24,7 @@ function tempDir(): string {
   return dir
 }
 
-function createStore(dir: string, overrides: Partial<KnowledgeConfig> = {}): KnowledgeStore {
+function createStoreConfig(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
   const defaultConfig: KnowledgeConfig = {
     enabled: true,
     maxCards: 50,
@@ -28,11 +35,11 @@ function createStore(dir: string, overrides: Partial<KnowledgeConfig> = {}): Kno
     retrieveTopK: 4,
     autoRetrieval: true,
   }
-  const config: KnowledgeConfig = {
-    ...defaultConfig,
-    ...overrides,
-  }
-  return new KnowledgeStore(dir, config)
+  return { ...defaultConfig, ...overrides }
+}
+
+function createStore(dir: string, overrides: Partial<KnowledgeConfig> = {}): KnowledgeStore {
+  return new KnowledgeStore(dir, createStoreConfig(overrides))
 }
 
 afterEach(() => {
@@ -126,6 +133,44 @@ describe('KnowledgeStore', () => {
     expect(newest).toHaveLength(2)
     expect(newest[0]?.title).toBe('Beta')
   })
+
+  it('discards cards with malformed tags, source, or timestamps during load', async () => {
+    const dir = tempDir()
+    writeFileSync(join(dir, 'knowledge.json'), JSON.stringify({ version: 1, cards: [
+      {
+        id: 'valid', title: 'Valid', summary: 'kept', tags: ['safe'], source: 'manual',
+        createdAt: '2026-08-20T00:00:00.000Z', updatedAt: '2026-08-20T00:00:00.000Z',
+      },
+      {
+        id: 'bad-tags', title: 'Bad tags', summary: 'discarded', tags: ['safe', 42], source: 'manual',
+        createdAt: '2026-08-20T00:00:00.000Z', updatedAt: '2026-08-20T00:00:00.000Z',
+      },
+      {
+        id: 'bad-source', title: 'Bad source', summary: 'discarded', tags: [], source: 'remote',
+        createdAt: '2026-08-20T00:00:00.000Z', updatedAt: '2026-08-20T00:00:00.000Z',
+      },
+      {
+        id: 'bad-time', title: 'Bad time', summary: 'discarded', tags: [], source: 'manual',
+        createdAt: 'not-a-date', updatedAt: '2026-08-20T00:00:00.000Z',
+      },
+    ] }), 'utf8')
+
+    const store = createStore(dir)
+    await store.loadFromDisk()
+
+    expect(store.allCards()).toHaveLength(1)
+    expect(store.cardById('valid')?.title).toBe('Valid')
+  })
+
+  it('does not leave an in-memory card behind when persistence fails', async () => {
+    const dir = tempDir()
+    mkdirSync(join(dir, 'knowledge.json'))
+    const store = createStore(dir)
+    await store.loadFromDisk()
+
+    await expect(store.addCard({ title: 'Ghost', summary: 'must not remain' }, 'manual')).rejects.toThrow()
+    expect(store.count()).toBe(0)
+  })
 })
 
 describe('daily hot news route', () => {
@@ -178,6 +223,36 @@ describe('daily hot news route', () => {
     expect(feed.items[0]).toEqual(expect.objectContaining({ title: 'AI News 1', url: 'https://example.com/1', cover: 'https://img.example/1.jpg' }))
     expect(feed.items[1]?.cover).toBeUndefined()
     expect(() => parseDailyNewsRss('<rss></rss>', 'Test', 'https://example.com')).toThrow('no headlines')
+  })
+
+  it('bounds RSS response bodies before parsing them', async () => {
+    const oversized = new Response(new Uint8Array(MAX_DAILY_NEWS_RESPONSE_BYTES + 1))
+    await expect(readLimitedRssBody(oversized)).rejects.toThrow('exceeds')
+  })
+
+  it('rejects path-like WorkBuddy avatar query segments', async () => {
+    const store = createStore(tempDir())
+    await store.loadFromDisk()
+    const routes = new Map<string, (request: unknown, response: unknown) => void | Promise<void>>()
+    const host = {
+      webServer: {
+        register: ({ path, handler }: { path: string, handler: (request: unknown, response: unknown) => void | Promise<void> }) => {
+          routes.set(path, handler)
+          return () => { routes.delete(path) }
+        },
+      },
+      effect: () => {},
+    }
+    const dispose = mountKnowledgeRoutes(host as never, store, createStoreConfig(), async () => ({
+      date: '2026-08-18', source: 'test', sourceUrl: 'https://example.test', items: [],
+    }))
+    const handler = routes.get(WORKBUDDY_EXPERT_AVATAR_ROUTE)
+    const response = new EventEmitter() as EventEmitter & { status?: number, writeHead(status: number): void, end(body?: unknown): void }
+    response.writeHead = status => { response.status = status }
+    response.end = () => {}
+    await handler?.({ url: '/dsh-desktop/experts/avatar?marketplace=..%2Foutside&name=plugin' }, response)
+    expect(response.status).toBe(400)
+    dispose()
   })
 })
 

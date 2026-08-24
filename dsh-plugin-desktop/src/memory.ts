@@ -14,6 +14,8 @@ import type {} from './profile-service.ts'
 import { blockedSnapshotEntry, scanThreats } from './threat-scan.ts'
 import { autoKnowledgeFromMemory, KnowledgeStore } from './knowledge.ts'
 import type { Config as KnowledgeConfig } from './knowledge.ts'
+import { UnifiedDb, defaultUnifiedDbPath } from './store/unified-db.ts'
+import { migrateFromFiles } from './store/migrate.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'desktop-memory'
@@ -163,6 +165,46 @@ function isEnoent(error: unknown): boolean {
   return isNodeError(error) && error.code === 'ENOENT'
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isMemoryOrigin(value: unknown): value is MemoryWriteOrigin {
+  return value === 'foreground' || value === 'review' || value === 'approval'
+}
+
+function isMemoryWrite(value: unknown): value is MemoryWrite {
+  if (!isRecord(value)) return false
+  if (value.action !== 'add' && value.action !== 'replace' && value.action !== 'remove') return false
+  if (value.content !== undefined && typeof value.content !== 'string') return false
+  if (value.oldText !== undefined && typeof value.oldText !== 'string') return false
+  return Object.keys(value).every(key => key === 'action' || key === 'content' || key === 'oldText')
+}
+
+function parsePendingRecord(value: unknown, expectedId?: string): PendingRecord | null {
+  if (!isRecord(value)
+    || typeof value.id !== 'string'
+    || (expectedId !== undefined && value.id !== expectedId)
+    || !PENDING_ID.test(value.id)
+    || (value.target !== 'memory' && value.target !== 'user')
+    || !isMemoryOrigin(value.origin)
+    || typeof value.createdAt !== 'string'
+    || !Number.isFinite(Date.parse(value.createdAt))
+    || !Array.isArray(value.operations)
+    || value.operations.length === 0
+    || !value.operations.every(isMemoryWrite)
+    || Object.keys(value).some(key => !['id', 'target', 'origin', 'createdAt', 'operations'].includes(key))) {
+    return null
+  }
+  return {
+    id: value.id,
+    target: value.target,
+    origin: value.origin,
+    createdAt: value.createdAt,
+    operations: value.operations,
+  }
+}
+
 /** Trim one model-supplied text value without rejecting empty inputs. */
 function clean(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -183,12 +225,63 @@ export class MemoryStore {
   /** Consecutive consolidation failures; a failed side effect must not stall the turn. */
   private consolidationFailures = 0
   private approvalEnabled: boolean
+  private unifiedDb: UnifiedDb | null = null
 
   constructor(
     readonly dir: string,
     private readonly options: MemoryStoreOptions,
   ) {
     this.approvalEnabled = options.writeApproval
+  }
+
+  /** Lazily open the unified SQLite layer (shared DB at profile root). Never throws. */
+  private async ensureUnifiedDb(): Promise<UnifiedDb | null> {
+    if (this.unifiedDb !== null && this.unifiedDb.isOpen()) return this.unifiedDb
+    try {
+      const profileDir = join(this.dir, '..')
+      const dbPath = defaultUnifiedDbPath(profileDir)
+      const db = new UnifiedDb(dbPath, {
+        memoryCharLimit: this.options.memoryCharLimit,
+        userCharLimit: this.options.userCharLimit,
+        maxCards: 500,
+      })
+      db.open()
+      // One-shot migration from legacy files into SQLite (idempotent).
+      await migrateFromFiles(profileDir, db)
+      this.unifiedDb = db
+      return db
+    } catch {
+      return null
+    }
+  }
+
+  /** Mirror approved facts into unified DB and regenerate file projection (best-effort). */
+  private async mirrorToUnified(): Promise<void> {
+    const db = await this.ensureUnifiedDb()
+    if (db === null) return
+    try {
+      // Upsert current in-memory entries as facts (deduped by UNIQUE content)
+      for (const target of ['memory', 'user'] as const) {
+        for (const content of this.entries[target]) {
+          try { db.upsertFact({ target, content }) } catch {}
+        }
+      }
+      // Remove DB facts that were deleted in this generation (sync deletions)
+      for (const target of ['memory', 'user'] as const) {
+        const dbFacts = db.listFacts(target).map(f => f.content)
+        for (const dbContent of dbFacts) {
+          if (!this.entries[target].includes(dbContent)) {
+            const fact = db.listFacts(target).find(f => f.content === dbContent)
+            if (fact !== undefined) {
+              try { db.deleteFact(fact.id) } catch {}
+            }
+          }
+        }
+      }
+      await db.syncProjection(this.dir)
+    } catch {
+      // Mirror is best-effort; file is still the durable truth for this write.
+    }
   }
 
   /** Read both stores, sanitize the snapshot, and restore the approval gate. */
@@ -205,6 +298,22 @@ export class MemoryStore {
     const conv = await readRaw(join(this.dir, CONVERSATIONS_FILE))
     if (!conv.readFailed && conv.text.trim() !== '') {
       this.conversations = parseEntries(conv.text).slice(-MAX_CONVERSATIONS)
+    }
+    // Unified layer: if SQLite is available and has facts, prefer it (migration has run).
+    try {
+      const db = await this.ensureUnifiedDb()
+      if (db !== null) {
+        for (const target of ['memory', 'user'] as const) {
+          const facts = db.listFacts(target)
+          if (facts.length > 0) {
+            const live = deduplicate(facts.map(f => f.content))
+            this.entries[target] = live
+            this.snapshot[target] = this.renderBlock(target, live.map(entry => blockedSnapshotEntry(entry) ?? entry))
+          }
+        }
+      }
+    } catch {
+      // Prefer file truth if SQLite fails
     }
   }
 
@@ -341,6 +450,28 @@ export class MemoryStore {
       operations,
       ...(committed.error === undefined ? {} : { error: committed.error }),
     })
+    if (committed.success) {
+      await this.mirrorToUnified()
+      // Also record an event in unified layer for provenance (best-effort)
+      try {
+        const db = await this.ensureUnifiedDb()
+        if (db !== null) {
+          const event = db.addEvent({ type: 'memory_write', target, payload: { operations }, sessionId: null })
+          // Create candidates for observability (pending->approved already)
+          for (const op of operations) {
+            if (op.content !== undefined && op.content.trim() !== '') {
+              try {
+                const candidate = db.createCandidate({ eventId: event.id, target, content: op.content.trim(), provenance: resolved.origin })
+                // Auto-approve when bypassing approval gate (the file path already committed)
+                if (candidate.status === 'pending') {
+                  try { db.approveCandidate(candidate.id) } catch {}
+                }
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+    }
     return committed
   }
 
@@ -350,6 +481,18 @@ export class MemoryStore {
     const record: PendingRecord = { id, target, origin, createdAt: new Date().toISOString(), operations: [...operations] }
     await writeFileAtomic(join(this.dir, PENDING_DIR, `${id}.json`), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, dirMode: 0o700 })
     await this.audit({ time: new Date().toISOString(), origin, target, outcome: 'staged', operations, pendingId: id })
+    // Mirror to unified DB candidate queue (observability, S1)
+    try {
+      const db = await this.ensureUnifiedDb()
+      if (db !== null) {
+        const event = db.addEvent({ type: 'memory_write', target, payload: { operations, pendingId: id }, sessionId: null })
+        for (const op of operations) {
+          if (op.content !== undefined && op.content.trim() !== '') {
+            try { db.createCandidate({ eventId: event.id, target, content: op.content.trim(), provenance: origin }) } catch {}
+          }
+        }
+      }
+    } catch {}
     return id
   }
 
@@ -362,8 +505,11 @@ export class MemoryStore {
         if (!name.endsWith('.json')) continue
         const raw = await readRaw(join(this.dir, PENDING_DIR, name))
         if (raw.readFailed || raw.text.trim() === '') continue
-        const record = JSON.parse(raw.text) as PendingRecord
-        if (PENDING_ID.test(record.id) && (record.target === 'memory' || record.target === 'user')) records.push(record)
+        let parsed: unknown
+        try { parsed = JSON.parse(raw.text) } catch { continue }
+        const expectedId = name.slice(0, -'.json'.length)
+        const record = parsePendingRecord(parsed, expectedId)
+        if (record !== null) records.push(record)
       }
       return records.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     } catch (error) {
@@ -378,14 +524,12 @@ export class MemoryStore {
     const path = join(this.dir, PENDING_DIR, `${id}.json`)
     const raw = await readRaw(path)
     if (raw.readFailed || raw.text.trim() === '') return null
-    let record: PendingRecord
-    try {
-      record = JSON.parse(raw.text) as PendingRecord
-    } catch {
-      return null
-    }
-    await rm(path, { force: true })
+    let parsed: unknown
+    try { parsed = JSON.parse(raw.text) } catch { return null }
+    const record = parsePendingRecord(parsed, id)
+    if (record === null) return null
     const result = await this.applyOperations(record.target, record.operations, { origin: 'approval', bypassApproval: true })
+    if (result.success) await rm(path, { force: true })
     await this.audit({
       time: new Date().toISOString(),
       origin: 'approval',

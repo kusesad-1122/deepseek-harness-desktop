@@ -6,6 +6,8 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { realpathSync } from 'node:fs'
+import { isAbsolute, relative, resolve } from 'node:path'
 import type { Config, KnowledgeStore } from './knowledge.ts'
 
 export interface WebServerService {
@@ -44,6 +46,7 @@ const DAILY_NEWS_FALLBACK_SOURCE_URL = 'https://36kr.com/'
 
 const DAILY_NEWS_AI_KEYWORDS = ['AI', '人工智能', '大模型', 'GPT', 'LLM', '深度学习', '机器学习', 'OpenAI', '智能', '算法', '芯片', '机器人', '自动驾驶', 'AIGC']
 const DAILY_NEWS_CACHE_MS = 15 * 60 * 1000
+export const MAX_DAILY_NEWS_RESPONSE_BYTES = 2 * 1024 * 1024
 
 export interface DailyNewsItem {
   readonly id: string
@@ -174,9 +177,37 @@ async function tryFetchRss(url: string, source: string, sourceUrl: string, filte
       signal: AbortSignal.timeout(timeoutMs),
     })
     if (!response.ok) return null
-    return parseDailyNewsRss(await response.text(), source, sourceUrl, filterAi)
+    return parseDailyNewsRss(await readLimitedRssBody(response), source, sourceUrl, filterAi)
   } catch {
     return null
+  }
+}
+
+/** Read a news response with a hard bound before handing it to the XML parser. */
+export async function readLimitedRssBody(response: Response): Promise<string> {
+  const declared = response.headers.get('content-length')
+  if (declared !== null && /^[0-9]+$/u.test(declared) && BigInt(declared) > BigInt(MAX_DAILY_NEWS_RESPONSE_BYTES)) {
+    throw new Error(`RSS response exceeds ${String(MAX_DAILY_NEWS_RESPONSE_BYTES)} bytes`)
+  }
+  if (response.body === null) return ''
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  let bytes = 0
+  let body = ''
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      bytes += chunk.value.byteLength
+      if (bytes > MAX_DAILY_NEWS_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined)
+        throw new Error(`RSS response exceeds ${String(MAX_DAILY_NEWS_RESPONSE_BYTES)} bytes`)
+      }
+      body += decoder.decode(chunk.value, { stream: true })
+    }
+    return body + decoder.decode()
+  } finally {
+    reader.releaseLock()
   }
 }
 
@@ -208,7 +239,7 @@ export async function loadDailyNews(forceRefresh = false): Promise<DailyNewsFeed
 // ── WorkBuddy expert directory scanning ──────────────────────────────────
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 export interface WorkBuddyExpertItem {
@@ -298,6 +329,7 @@ export function scanWorkBuddyExperts(forceRefresh = false): readonly WorkBuddyEx
 
 /** Serve an expert avatar image. Returns the buffer and content-type, or null. */
 export function getExpertAvatar(marketplace: string, name: string): { data: Buffer, mime: string } | null {
+  if (!isSafePathSegment(marketplace) || !isSafePathSegment(name)) return null
   const wbRoot = resolve(homedir(), '.workbuddy', 'plugins', 'marketplaces')
   for (const subDir of ['plugins', 'external_plugins', 'builtin-plugins']) {
     const pluginDir = join(wbRoot, marketplace, subDir, name)
@@ -307,7 +339,18 @@ export function getExpertAvatar(marketplace: string, name: string): { data: Buff
       const json = JSON.parse(readFileSync(jsonPath, 'utf8')) as Record<string, unknown>
       const avatarRel = typeof json.avatar === 'string' ? json.avatar : ''
       if (avatarRel === '') continue
-      const avatarPath = join(pluginDir, avatarRel)
+      const pluginRoot = resolve(pluginDir)
+      const avatarPath = resolve(pluginRoot, avatarRel)
+      const relativeAvatar = relative(pluginRoot, avatarPath)
+      if (relativeAvatar === '' || relativeAvatar.startsWith('..') || isAbsolute(relativeAvatar)) continue
+      let realPluginRoot: string
+      let realAvatarPath: string
+      try {
+        realPluginRoot = realpathSync(pluginRoot)
+        realAvatarPath = realpathSync(avatarPath)
+      } catch { continue }
+      const realRelativeAvatar = relative(realPluginRoot, realAvatarPath)
+      if (realRelativeAvatar === '' || realRelativeAvatar.startsWith('..') || isAbsolute(realRelativeAvatar)) continue
       if (!existsSync(avatarPath)) continue
       const data = readFileSync(avatarPath)
       const ext = avatarPath.toLowerCase()
@@ -316,6 +359,10 @@ export function getExpertAvatar(marketplace: string, name: string): { data: Buff
     } catch { /* skip */ }
   }
   return null
+}
+
+function isSafePathSegment(value: string): boolean {
+  return value.length > 0 && value !== '.' && value !== '..' && !/[\\/\0\r\n]/u.test(value)
 }
 
 /**
@@ -454,7 +501,7 @@ export function mountKnowledgeRoutes(
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       const marketplace = (url.searchParams.get('marketplace') ?? '').trim()
       const name = (url.searchParams.get('name') ?? '').trim()
-      if (marketplace === '' || name === '') {
+      if (!isSafePathSegment(marketplace) || !isSafePathSegment(name)) {
         response.writeHead(400); response.end(); return
       }
       const avatar = getExpertAvatar(marketplace, name)

@@ -13,24 +13,27 @@
  *   calendar  → daily news feed calendar
  *   files     → knowledge card table + reader dialog
  *   team      → WorkBuddy expert roster
- *   settings  → memory budgets + knowledge health + theme variants
- *   market    → injected 07 nav page: dsh-market registry browse/install
+ *   settings  → memory budgets + knowledge health
  *
  * The right-hand context rail is filled with live next-steps, progress,
  * tags, and system hints. Every page keeps the theme's own classes so the
  * authored visual design is untouched.
  */
 
-import { OFFICE_DESK_THEME_HTML } from './office-desk-theme-data.ts'
+import { OFFICE_DESK_THEME_HTML, officeDeskThemeHtmlForRuntime } from './office-desk-theme-data.ts'
 
 export interface OfficeDeskThemeHostInfo {
   readonly mode: string
   readonly platform: string
+  /** Reveal the upstream conversation surface without recreating the theme. */
+  readonly openNativeConversation?: () => void
+  /** Reveal and invoke the upstream settings surface. */
+  readonly openNativeSettings?: () => void
 }
 
 interface BridgeRequest {
   readonly id: number
-  readonly op: 'json' | 'post'
+  readonly op: 'json' | 'post' | 'action'
   readonly route: string
   readonly body?: unknown
 }
@@ -44,8 +47,23 @@ interface BridgeReply {
 
 const THEME_READY_FLAG = '__dshDeskThemeReady'
 
-/** Fetch JSON through the parent document (never depends on srcdoc origin). */
-export function mountOfficeDeskTheme(container: HTMLElement, info: OfficeDeskThemeHostInfo): () => void {
+export interface OfficeDeskThemeMount {
+  dispose(): void
+  setVisible(visible: boolean): void
+}
+
+/** Build a selector rooted at one authored page instead of the whole theme. */
+export function scopedPageSelector(page: string, selector: string): string {
+  return `[data-page="${page}"] ${selector}`
+}
+
+/** Return every reader close control so header and footer actions stay in sync. */
+export function closeReaderDialogButtons(dialog: ParentNode): HTMLElement[] {
+  return Array.from(dialog.querySelectorAll<HTMLElement>('[data-close="dshReaderDialog"]'))
+}
+
+/** Fetch JSON and dispatch native-surface actions through the parent document. */
+export function mountOfficeDeskTheme(container: HTMLElement, info: OfficeDeskThemeHostInfo): OfficeDeskThemeMount {
   const frame = document.createElement('iframe')
   frame.className = 'dsh-desk-theme-frame'
   frame.setAttribute('aria-label', '办公工作台')
@@ -59,6 +77,7 @@ export function mountOfficeDeskTheme(container: HTMLElement, info: OfficeDeskThe
 
   const pending = new Map<number, (reply: BridgeReply) => void>()
   const onMessage = (event: MessageEvent): void => {
+    if (event.source !== frame.contentWindow) return
     const data = event.data as { dshDeskThemeReply?: BridgeReply, dshDeskTheme?: BridgeRequest } | null
     if (data === null || typeof data !== 'object') return
     const reply = data.dshDeskThemeReply
@@ -72,9 +91,22 @@ export function mountOfficeDeskTheme(container: HTMLElement, info: OfficeDeskThe
     }
     const request = data.dshDeskTheme
     if (request !== undefined && typeof request.id === 'number'
-      && (request.op === 'json' || request.op === 'post')) {
+      && (request.op === 'json' || request.op === 'post' || request.op === 'action')) {
       const target = frame.contentWindow
       if (target === null) return
+      if (request.op === 'action') {
+        if (request.route === 'native/conversation') info.openNativeConversation?.()
+        else if (request.route === 'native/settings') info.openNativeSettings?.()
+        else {
+          target.postMessage(
+            { dshDeskThemeReply: { id: request.id, ok: false, error: 'Unknown theme action' } },
+            '*',
+          )
+          return
+        }
+        target.postMessage({ dshDeskThemeReply: { id: request.id, ok: true } }, '*')
+        return
+      }
       void (async () => {
         try {
           const init: RequestInit = request.op === 'post'
@@ -126,15 +158,28 @@ export function mountOfficeDeskTheme(container: HTMLElement, info: OfficeDeskThe
     disposers.push(setupThemeAdapter(win, doc, info))
   }
   frame.addEventListener('load', mounted, { once: true })
-  frame.srcdoc = OFFICE_DESK_THEME_HTML
+  frame.srcdoc = officeDeskThemeHtmlForRuntime(OFFICE_DESK_THEME_HTML)
 
   container.appendChild(frame)
   disposers.push(() => {
     disposed = true
     frame.remove()
   })
-  return () => {
-    for (const dispose of disposers.splice(0)) dispose()
+  const notifyWebglVisibility = (visible: boolean): void => {
+    try {
+      frame.contentWindow?.postMessage({ type: 'dshWebglVisibility', visible }, '*')
+    } catch {
+      // iframe may not be ready yet
+    }
+  }
+  return {
+    dispose: () => {
+      for (const dispose of disposers.splice(0)) dispose()
+    },
+    setVisible: (visible: boolean) => {
+      frame.style.display = visible ? 'block' : 'none'
+      notifyWebglVisibility(visible)
+    },
   }
 }
 
@@ -193,7 +238,7 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
   }
 
   let seq = 0
-  const bridge = (op: 'json' | 'post', route: string, body?: unknown): Promise<unknown | null> => {
+  const bridge = (op: 'json' | 'post' | 'action', route: string, body?: unknown): Promise<unknown | null> => {
     const id = ++seq
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -219,6 +264,9 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
     }
   }
   win.addEventListener('message', onReply)
+  const nativeAction = (route: 'native/conversation' | 'native/settings'): void => {
+    void bridge('action', route)
+  }
 
   // ── real host data shapes ──
   interface KnowledgeCard {
@@ -265,20 +313,6 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
     tags: Array<Record<string, string>>
     categoryId?: string
   }
-  interface MarketPlugin {
-    name: string
-    url: string
-    description?: string
-    npm?: string
-    version?: string
-  }
-  interface MarketRegistry { source: string, registry: { plugins: MarketPlugin[] } }
-  interface MarketInstalled {
-    installed: Record<string, string>
-    present: string[]
-    activation: Record<string, boolean>
-  }
-
   const api = {
     memory: (): Promise<MemoryState | null> => bridge('json', '/dsh-desktop/memory/state') as Promise<MemoryState | null>,
     knowledge: (): Promise<KnowledgeState | null> => bridge('json', '/dsh-desktop/knowledge/state') as Promise<KnowledgeState | null>,
@@ -293,10 +327,6 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
     news: (force = false): Promise<NewsFeed | null> =>
       bridge('json', `/dsh-desktop/news/daily${force ? '?refresh=1' : ''}`) as Promise<NewsFeed | null>,
     experts: (): Promise<Expert[] | null> => bridge('json', '/dsh-desktop/experts/list') as Promise<Expert[] | null>,
-    registry: (): Promise<MarketRegistry | null> => bridge('json', '/dsh-market/registry') as Promise<MarketRegistry | null>,
-    installed: (): Promise<MarketInstalled | null> => bridge('json', '/dsh-market/installed') as Promise<MarketInstalled | null>,
-    install: (url: string): Promise<unknown | null> => bridge('post', '/dsh-market/install', { url }),
-    uninstall: (name: string): Promise<unknown | null> => bridge('post', '/dsh-market/uninstall', { name }),
   }
 
   // ── reader dialog (theme-styled, runtime-injected; theme file untouched) ──
@@ -317,7 +347,9 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
         <button class="primary" data-close="dshReaderDialog" type="button">关闭</button>
       </div>`
     doc.body.appendChild(dialog)
-    dialog.querySelector('[data-close="dshReaderDialog"]')?.addEventListener('click', () => dialog.close())
+    closeReaderDialogButtons(dialog).forEach((button) => {
+      button.addEventListener('click', () => dialog.close())
+    })
     dialog.querySelector('#dshReaderCopy')?.addEventListener('click', () => {
       const text = dialog.querySelector('#dshReaderBody')?.textContent ?? ''
       void navigator.clipboard?.writeText(text).then(() => toast('知识卡全文已复制')).catch(() => toast('复制失败'))
@@ -386,12 +418,11 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
     const today = cards.filter((card) => isToday(card.createdAt))
     const pendingList = memory?.pending ?? []
     setText('#doneMetric', String(today.length))
-    setText('#doneBar', `${today.length}`)
     const bar = $('#doneBar')
     if (bar !== null) bar.style.width = `${Math.min(100, Math.round((today.length / Math.max(1, cards.length)) * 100))}%`
     setText('#inboxMetric', String(pendingList.length))
     setText('#syncText', `已同步 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`)
-    const metricCards = $$('.grid-3 .card')
+    const metricCards = $$(scopedPageSelector('home', '.grid-3 .card'))
     if (metricCards[1] !== undefined) {
       const deepLabel = metricCards[1].querySelector('.metric span')
       const deepValue = metricCards[1].querySelector('.metric strong')
@@ -506,7 +537,7 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
     if (noticeCard !== undefined) {
       const notice = noticeCard.querySelector('.notice')
       if (notice !== null) {
-        notice.textContent = `桌面工作台 · ${info.mode} 模式运行中。知识库 ${cards.length} 张卡，待审批 ${pendingList.length} 条，今日新增 ${today.length} 条。`
+        notice.textContent = `桌面工作台 · ${info.mode} 模式运行中。知识库 ${cards.length} 张卡，待审批 ${pendingList.length} 条，今日新增 ${today.length} 条。双击左上 Deep Code 或按 Ctrl+Shift+D 可进入原生对话；左下设置会打开原生设置。`
       }
     }
     if (news !== null && news.items.length > 0) setText('#pageKicker', `实时 / 01 · ${news.source}`)
@@ -572,11 +603,10 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
         button.addEventListener('click', () => toast(`已选择 ${month + 1} 月 ${button.dataset.day} 日`))
       })
     }
-    const label = $('.label-row span')
+    const label = $(scopedPageSelector('calendar', '.label-row span'))
     if (label !== null && feed !== null) label.textContent = `${year} 年 ${month + 1} 月 · ${feed.source}`
-    const candidates = $$('.card .task-list')
-    const list = candidates[1] ?? candidates[0]
-    if (list !== undefined) {
+    const list = $(scopedPageSelector('calendar', '.card .task-list'))
+    if (list !== null) {
       list.innerHTML = ''
       const items = feed?.items ?? []
       if (items.length === 0) list.innerHTML = '<div class="empty" style="min-height:90px;border:0"><strong>今日暂无热点</strong><p>可在每日热点页刷新抓取。</p></div>'
@@ -628,21 +658,26 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
           tr.style.display = query === '' || (tr.textContent ?? '').toLowerCase().includes(query) ? '' : 'none'
         }
       }
-      search.addEventListener('input', onInput)
+      if (search.dataset['dshFileSearchBound'] !== '1') {
+        search.dataset['dshFileSearchBound'] = '1'
+        search.addEventListener('input', onInput)
+      }
     }
   }
 
+  let teamExperts: Expert[] = []
   async function renderTeamPage(): Promise<void> {
     const experts = await api.experts()
     const memory = await api.memory()
     const list = experts ?? []
-    setText('.grid-3 .card:nth-child(1) .metric strong', String(list.length))
-    const successCard = $$('.grid-3 .card')[1]
+    teamExperts = list
+    setText(scopedPageSelector('team', '.grid-3 .card:nth-child(1) .metric strong'), String(list.length))
+    const successCard = $(scopedPageSelector('team', '.grid-3 .card:nth-child(2)'))
     const avatarRatio = list.length > 0 ? Math.round((list.filter((expert) => expert.hasAvatar).length / list.length) * 100) : 0
     successCard?.querySelector('.metric strong')?.replaceChildren(doc.createTextNode(String(avatarRatio)))
     successCard?.querySelector('.metric span')?.replaceChildren(doc.createTextNode('% 带形象'))
-    setText('.grid-3 .card:nth-child(3) .metric strong', String(memory?.pending.length ?? 0))
-    const tbody = $('.card .table tbody')
+    setText(scopedPageSelector('team', '.grid-3 .card:nth-child(3) .metric strong'), String(memory?.pending.length ?? 0))
+    const tbody = $(scopedPageSelector('team', '.card .table tbody'))
     if (tbody === null) return
     tbody.innerHTML = ''
     if (list.length === 0) {
@@ -661,9 +696,10 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
       tbody.appendChild(tr)
     }
     const invite = $('#inviteBtn')
-    if (invite !== null) {
+    if (invite !== null && invite.dataset['dshInviteBound'] !== '1') {
+      invite.dataset['dshInviteBound'] = '1'
       invite.addEventListener('click', () => {
-        const first = list[0]
+        const first = teamExperts[0]
         if (first === undefined) { toast('专家目录为空'); return }
         const text = `专家：${first.displayName['zh'] ?? first.name}\n职业：${first.profession['zh'] ?? ''}\n介绍：${first.description['zh'] ?? ''}`
         void navigator.clipboard?.writeText(text).then(() => toast('已复制第一位专家的调用文案')).catch(() => toast('复制失败'))
@@ -671,12 +707,12 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
     }
   }
 
-  // ── settings: memory budgets + knowledge health + theme variants ──
+  // ── settings: memory budgets + knowledge health ──
   async function renderSettingsPage(): Promise<void> {
     const memory = await api.memory()
     const knowledge = await api.knowledge()
     const cards = knowledge?.cards ?? []
-    const firstCard = $('.grid-2 .card')
+    const firstCard = $(scopedPageSelector('settings', '.grid-2 .card'))
     if (firstCard !== null) {
       const holder = firstCard.querySelector('.task-list') ?? firstCard
       const bars = memory?.targets ?? []
@@ -695,12 +731,13 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
       }
       holder.appendChild(wrap)
     }
-    const secondCard = $$('.grid-2 .card')[1]
-    if (secondCard !== undefined) {
+    const secondCard = $(scopedPageSelector('settings', '.grid-2 .card:nth-child(2)'))
+    if (secondCard !== null) {
       const holder = secondCard.querySelector('.task-list') ?? secondCard
       const tooShort = cards.filter((card) => card.summary.trim().length < 30).length
       const noTags = cards.filter((card) => card.tags.length === 0).length
       const dupes = cards.length - new Set(cards.map((card) => card.title.trim())).size
+      secondCard.querySelector('#dshHealthReport')?.remove()
       const report = doc.createElement('div')
       report.id = 'dshHealthReport'
       report.innerHTML = `
@@ -712,153 +749,33 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
         </div>`
       holder.appendChild(report)
     }
-    // theme variants (runtime CSS variables only)
-    const variantStyle = doc.createElement('style')
-    variantStyle.textContent = `
-      html[data-desk-variant="blue"] { --accent: oklch(.54 .105 250); --pink: oklch(.64 .14 38); }
-      html[data-desk-variant="mint"] { --accent: oklch(.58 .12 160); --pink: oklch(.64 .14 38); }
-      .dsh-variant-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-    `
-    doc.head.appendChild(variantStyle)
-    const saved = (() => { try { return win.localStorage.getItem('dsh-desk-theme-variant') ?? 'default' } catch { return 'default' } })()
-    doc.documentElement.setAttribute('data-desk-variant', saved)
-    const settingsPage = $('[data-page="settings"]')
-    if (settingsPage !== null && !settingsPage.querySelector('.dsh-variant-row')) {
-      const row = doc.createElement('div')
-      row.className = 'dsh-variant-row'
-      row.innerHTML = '<span class="label-row" style="align-self:center">主题变体</span>'
-      const variants: Array<{ key: string, label: string }> = [
-        { key: 'default', label: '原版办公' },
-        { key: 'blue', label: '蔚蓝' },
-        { key: 'mint', label: '薄荷' },
-      ]
-      for (const variant of variants) {
-        const button = doc.createElement('button')
-        button.className = `mini${saved === variant.key ? ' filter-task active' : ''}`
-        button.textContent = variant.label
-        button.addEventListener('click', () => {
-          doc.documentElement.setAttribute('data-desk-variant', variant.key)
-          try { win.localStorage.setItem('dsh-desk-theme-variant', variant.key) } catch { /* best effort */ }
-          $$('.dsh-variant-row .mini').forEach((element) => element.classList.toggle('filter-task', element === button))
-          toast(`主题变体：${variant.label}`)
-        })
-        row.appendChild(button)
-      }
-      settingsPage.appendChild(row)
-    }
-  }
-
-  // ── market page (injected nav 07; never touches the theme source) ──
-  function ensureMarketPage(): void {
-    const nav = $('.nav')
-    if (nav !== null && $('[data-nav="market"]') === null) {
-      const button = doc.createElement('button')
-      button.className = 'nav-btn'
-      button.dataset['nav'] = 'market'
-      button.innerHTML = '<span class="nav-no">07</span><strong>市场</strong><small>插件浏览与安装</small>'
-      nav.appendChild(button)
-    }
-    if ($('[data-page="market"]') === null) {
-      const stage = $('.stage')
-      if (stage === null) return
-      const section = doc.createElement('section')
-      section.className = 'page'
-      section.dataset['page'] = 'market'
-      section.setAttribute('aria-labelledby', 'marketTitle')
-      section.innerHTML = `
-        <div class="hero"><div><p class="kicker">市场 / 浏览与安装</p><h2 id="marketTitle">插件市场，<br><span>即装即用。</span></h2><p>浏览社区插件目录，一键安装到当前桌面工作台。安装后按提示重启即可生效。</p></div><button class="primary" id="marketRefresh">↻ 刷新目录</button></div>
-        <div class="card card-pad">
-          <div class="label-row"><span>插件目录</span><label class="mini">⌕ <input id="marketSearch" placeholder="搜索插件" style="width:140px;border:0;background:transparent;color:var(--fg);outline:0;font-size:10px"></label></div>
-          <div class="grid grid-3" id="marketGrid" style="margin-top:12px"></div>
-        </div>`
-      stage.appendChild(section)
-      section.querySelector('#marketRefresh')?.addEventListener('click', () => { marketCache = null; void renderMarketPage() })
-      const search = section.querySelector('#marketSearch') as HTMLInputElement | null
-      search?.addEventListener('input', () => { void renderMarketPage(search.value.trim().toLowerCase()) })
-    }
-  }
-  let marketCache: { registry: MarketRegistry | null, installed: MarketInstalled | null } | null = null
-  async function renderMarketPage(filter = ''): Promise<void> {
-    ensureMarketPage()
-    if (marketCache === null) {
-      const [registry, installed] = await Promise.all([api.registry(), api.installed()])
-      marketCache = { registry, installed }
-      if (registry === null || installed === null) {
-        toast('市场接口暂不可用（重启桌面版后生效）')
-      }
-    }
-    const grid = $('#marketGrid')
-    if (grid === null) return
-    grid.innerHTML = ''
-    const plugins = marketCache?.registry?.registry?.plugins ?? []
-    const installedMap = marketCache?.installed?.installed ?? {}
-    const filtered = plugins.filter((plugin) => {
-      if (filter === '') return true
-      const haystack = `${plugin.name} ${plugin.description ?? ''} ${plugin.npm ?? ''}`.toLowerCase()
-      return haystack.includes(filter)
-    })
-    if (filtered.length === 0) {
-      grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><strong>没有匹配插件</strong><p>换个关键词试试。</p></div>'
-      return
-    }
-    for (const plugin of filtered.slice(0, 48)) {
-      const isInstalled = installedMap[plugin.name] !== undefined
-      const card = doc.createElement('article')
-      card.className = 'card card-pad'
-      const title = doc.createElement('h3')
-      title.textContent = plugin.name
-      const desc = doc.createElement('p')
-      desc.textContent = (plugin.description ?? '').slice(0, 90)
-      const actionRow = doc.createElement('div')
-      actionRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-top:12px'
-      const badge = doc.createElement('span')
-      badge.className = `tag ${isInstalled ? 'accent' : 'blue'}`
-      badge.textContent = isInstalled ? '已安装' : '可安装'
-      const action = doc.createElement('button')
-      action.className = 'mini'
-      action.textContent = isInstalled ? '卸载' : '安装'
-      action.addEventListener('click', () => {
-        if (isInstalled) {
-          if (!win.confirm(`卸载插件「${plugin.name}」？`)) return
-          action.textContent = '处理中…'
-          void api.uninstall(plugin.name).then((result) => {
-            marketCache = null
-            if (result === null) toast('卸载失败或接口未就绪')
-            else toast(`${plugin.name} 已卸载`)
-            void renderMarketPage(filter)
-          })
-        } else {
-          action.textContent = '安装中…'
-          void api.install(plugin.url).then((result) => {
-            const body = result as { error?: string } | null
-            if (result === null) { toast('安装失败：接口未就绪'); action.textContent = '安装' }
-            else if (body?.error !== undefined) { toast(`安装失败：${body.error}`); action.textContent = '安装' }
-            else {
-              marketCache = null
-              toast(`${plugin.name} 安装成功，重启桌面版后生效`)
-              void renderMarketPage(filter)
-            }
-          })
-        }
-      })
-      actionRow.append(badge, action)
-      card.append(title, desc, actionRow)
-      grid.appendChild(card)
-    }
   }
 
   // ── central refresh / navigation ──
+  let activePage = doc.querySelector<HTMLElement>('.page.active')?.dataset['page'] ?? 'home'
+  let refreshing = false
+  let refreshQueued = false
   async function refreshAll(): Promise<void> {
-    const [memory, knowledge, news] = await Promise.all([api.memory(), api.knowledge(), api.news(false)])
-    await renderHome(memory, knowledge, news)
-    await Promise.all([
-      renderFullTasks(),
-      renderCalendarPage(),
-      renderFilesPage(),
-      renderTeamPage(),
-      renderSettingsPage(),
-      renderMarketPage(),
-    ])
+    if (refreshing) {
+      refreshQueued = true
+      return
+    }
+    refreshing = true
+    try {
+      const [memory, knowledge, news] = await Promise.all([api.memory(), api.knowledge(), api.news(false)])
+      await renderHome(memory, knowledge, news)
+      if (activePage === 'tasks') await renderFullTasks()
+      else if (activePage === 'calendar') await renderCalendarPage()
+      else if (activePage === 'files') await renderFilesPage()
+      else if (activePage === 'team') await renderTeamPage()
+      else if (activePage === 'settings') await renderSettingsPage()
+    } finally {
+      refreshing = false
+      if (refreshQueued) {
+        refreshQueued = false
+        void refreshAll()
+      }
+    }
   }
 
   const pages: Record<string, () => void> = {
@@ -868,7 +785,6 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
     files: () => { void renderFilesPage() },
     team: () => { void renderTeamPage() },
     settings: () => { void renderSettingsPage() },
-    market: () => { void renderMarketPage() },
   }
   const titles: Record<string, { name: string, no: string }> = {
     home: { name: '办公工作台', no: '01' },
@@ -877,9 +793,9 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
     files: { name: '本地文件', no: '04' },
     team: { name: '团队协作', no: '05' },
     settings: { name: '工作台设置', no: '06' },
-    market: { name: '插件市场', no: '07' },
   }
   win.navigate = (page: string): void => {
+    activePage = titles[page] === undefined ? 'home' : page
     $$('.page').forEach((element) => element.classList.toggle('active', element.dataset['page'] === page))
     $$('.nav-btn').forEach((element) => {
       const active = element.dataset['nav'] === page
@@ -891,33 +807,56 @@ function setupThemeAdapter(win: ThemeWindow, doc: Document, info: OfficeDeskThem
     setText('#pageTitle', title?.name ?? '办公工作台')
     setText('#pageKicker', `实时 / ${title?.no ?? '—'} · 工作区`)
     toast(`已切换到${title?.name ?? '办公工作台'}`)
-    pages[page]?.()
+    pages[activePage]?.()
   }
 
-  // primary buttons retargeted to live actions (runtime only; theme intact)
-  const addTask = $('#addTaskBtn')
-  addTask?.addEventListener('click', () => { ($('#taskDialog') as HTMLDialogElement | null)?.showModal() }, { capture: true })
-  const addTask2 = $('#addTaskBtn2')
-  addTask2?.addEventListener('click', () => { ($('#taskDialog') as HTMLDialogElement | null)?.showModal() }, { capture: true })
-  const upload = $('#uploadBtn')
-  upload?.addEventListener('click', () => { ($('#taskDialog') as HTMLDialogElement | null)?.showModal() }, { capture: true })
+  const onNavigation = (event: MouseEvent): void => {
+    const target = event.target as { closest?: <T extends Element>(selector: string) => T | null } | null
+    if (target?.closest === undefined) return
+    const nav = target.closest<HTMLElement>('[data-nav]')
+    if (nav === null) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    if (nav.classList.contains('settings-btn')) {
+      nativeAction('native/settings')
+      return
+    }
+    win.navigate?.(nav.dataset['nav'] ?? 'home')
+  }
+  doc.addEventListener('click', onNavigation, { capture: true })
+
+  const brand = $('.brand')
+  const onBrandDoubleClick = (event: MouseEvent): void => {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    nativeAction('native/conversation')
+  }
+  brand?.addEventListener('dblclick', onBrandDoubleClick, { capture: true })
+
+  const onThemeKeyDown = (event: KeyboardEvent): void => {
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'd') {
+      event.preventDefault()
+      nativeAction('native/conversation')
+    }
+  }
+  win.addEventListener('keydown', onThemeKeyDown)
+
+  // The authored theme already owns task and file button gestures. A second
+  // capture listener would call showModal() twice and throw InvalidStateError.
   const addEvent = $('#addEventBtn')
   addEvent?.addEventListener('click', () => { void refreshAll() }, { capture: true })
   const reset = $('#resetBtn')
   reset?.addEventListener('click', () => { toast('桌面工作台偏好保存在本地') }, { capture: true })
   const clearDone = $('#clearDoneBtn')
   clearDone?.addEventListener('click', () => { toast('知识卡请使用列表中的「删」按钮') }, { capture: true })
-  const searchBtn = $('#searchBtn')
-  searchBtn?.addEventListener('click', () => { win.navigate?.('market') }, { capture: true })
-  const focusBtn = $('#focusBtn')
-  focusBtn?.addEventListener('click', () => { toast('本地模式运行中，工作区已连接') }, { capture: true })
-
   interceptTaskForm()
-  ensureMarketPage()
   void refreshAll()
 
   return () => {
     win.removeEventListener('message', onReply)
+    win.removeEventListener('keydown', onThemeKeyDown)
+    doc.removeEventListener('click', onNavigation, { capture: true })
+    brand?.removeEventListener('dblclick', onBrandDoubleClick, { capture: true })
     const dialog = readerDialog
     if (dialog !== null) dialog.remove()
     readerDialog = null
