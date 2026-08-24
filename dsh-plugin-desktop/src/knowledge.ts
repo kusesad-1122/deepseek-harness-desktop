@@ -464,6 +464,11 @@ export class KnowledgeStore {
       current.title,
       id,
     )
+    await this.mirrorDeleteToUnified(id)
+    try {
+      const db = await this.ensureUnifiedDb()
+      if (db !== null) db.addEvent({ type: 'knowledge_write', target: 'knowledge', payload: { action: 'delete', id } })
+    } catch {}
     return {
       success: true,
       count: this.cards.length,
