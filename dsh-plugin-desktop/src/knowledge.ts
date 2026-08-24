@@ -281,25 +281,28 @@ export class KnowledgeStore {
     await mkdir(this.dir, { recursive: true })
     const raw = await this.readRaw(join(this.dir, KNOWLEDGE_FILE))
     if (raw.readFailed || raw.text.trim() === '') {
-      // Even if file is empty, try to hydrate from unified DB (migration target)
-      try {
-        const db = await this.ensureUnifiedDb()
-        if (db !== null) {
-          const cards = db.listKnowledgeCards()
-          if (cards.length > 0) {
-            this.cards = cards.map(c => ({
-              id: c.id,
-              title: c.title,
-              summary: c.summary,
-              tags: [...c.tags],
-              source: c.source,
-              createdAt: c.createdAt,
-              updatedAt: c.updatedAt,
-            })).slice(0, this.options.maxCards)
-            return
+      // Hydrate from unified DB in background only — never block boot/switch
+      void (async () => {
+        try {
+          const db = await this.ensureUnifiedDb()
+          if (db !== null) {
+            const cards = db.listKnowledgeCards()
+            if (cards.length > 0) {
+              if (this.cards.length === 0) {
+                this.cards = cards.map(c => ({
+                  id: c.id,
+                  title: c.title,
+                  summary: c.summary,
+                  tags: [...c.tags],
+                  source: c.source,
+                  createdAt: c.createdAt,
+                  updatedAt: c.updatedAt,
+                })).slice(0, this.options.maxCards)
+              }
+            }
           }
-        }
-      } catch {}
+        } catch {}
+      })()
       return
     }
     try {
@@ -409,12 +412,14 @@ export class KnowledgeStore {
       updatedAt: now,
     }
     await this.commit([...this.cards, card], origin, 'added', title)
-    await this.mirrorCardToUnified(card)
-    // Also create an event for provenance in unified DB
-    try {
-      const db = await this.ensureUnifiedDb()
-      if (db !== null) db.addEvent({ type: 'knowledge_write', target: 'knowledge', payload: { action: 'add', id: card.id, title } })
-    } catch {}
+    void this.mirrorCardToUnified(card)
+    // Also create an event for provenance in unified DB (best-effort, never block)
+    void (async () => {
+      try {
+        const db = await this.ensureUnifiedDb()
+        if (db !== null) db.addEvent({ type: 'knowledge_write', target: 'knowledge', payload: { action: 'add', id: card.id, title } })
+      } catch {}
+    })()
     return {
       success: true,
       card,

@@ -309,22 +309,27 @@ export class MemoryStore {
     if (!conv.readFailed && conv.text.trim() !== '') {
       this.conversations = parseEntries(conv.text).slice(-MAX_CONVERSATIONS)
     }
-    // Unified layer: if SQLite is available and has facts, prefer it (migration has run).
-    try {
-      const db = await this.ensureUnifiedDb()
-      if (db !== null) {
-        for (const target of ['memory', 'user'] as const) {
-          const facts = db.listFacts(target)
-          if (facts.length > 0) {
-            const live = deduplicate(facts.map(f => f.content))
-            this.entries[target] = live
-            this.snapshot[target] = this.renderBlock(target, live.map(entry => blockedSnapshotEntry(entry) ?? entry))
+    // Unified layer: hydrate from SQLite in background only — never block boot
+    void (async () => {
+      try {
+        const db = await this.ensureUnifiedDb()
+        if (db !== null) {
+          for (const target of ['memory', 'user'] as const) {
+            const facts = db.listFacts(target)
+            if (facts.length > 0) {
+              const live = deduplicate(facts.map(f => f.content))
+              // Only hydrate if in-memory is still empty (avoid overwriting concurrent writes)
+              if (this.entries[target].length === 0) {
+                this.entries[target] = live
+                this.snapshot[target] = this.renderBlock(target, live.map(entry => blockedSnapshotEntry(entry) ?? entry))
+              }
+            }
           }
         }
+      } catch {
+        // Prefer file truth if SQLite fails
       }
-    } catch {
-      // Prefer file truth if SQLite fails
-    }
+    })()
   }
 
   /**
@@ -461,26 +466,26 @@ export class MemoryStore {
       ...(committed.error === undefined ? {} : { error: committed.error }),
     })
     if (committed.success) {
-      await this.mirrorToUnified()
-      // Also record an event in unified layer for provenance (best-effort)
-      try {
-        const db = await this.ensureUnifiedDb()
-        if (db !== null) {
-          const event = db.addEvent({ type: 'memory_write', target, payload: { operations }, sessionId: null })
-          // Create candidates for observability (pending->approved already)
-          for (const op of operations) {
-            if (op.content !== undefined && op.content.trim() !== '') {
-              try {
-                const candidate = db.createCandidate({ eventId: event.id, target, content: op.content.trim(), provenance: resolved.origin })
-                // Auto-approve when bypassing approval gate (the file path already committed)
-                if (candidate.status === 'pending') {
-                  try { db.approveCandidate(candidate.id) } catch {}
-                }
-              } catch {}
+      void this.mirrorToUnified()
+      // Also record an event in unified layer for provenance (best-effort, never block)
+      void (async () => {
+        try {
+          const db = await this.ensureUnifiedDb()
+          if (db !== null) {
+            const event = db.addEvent({ type: 'memory_write', target, payload: { operations }, sessionId: null })
+            for (const op of operations) {
+              if (op.content !== undefined && op.content.trim() !== '') {
+                try {
+                  const candidate = db.createCandidate({ eventId: event.id, target, content: op.content.trim(), provenance: resolved.origin })
+                  if (candidate.status === 'pending') {
+                    try { db.approveCandidate(candidate.id) } catch {}
+                  }
+                } catch {}
+              }
             }
           }
-        }
-      } catch {}
+        } catch {}
+      })()
     }
     return committed
   }
@@ -491,18 +496,20 @@ export class MemoryStore {
     const record: PendingRecord = { id, target, origin, createdAt: new Date().toISOString(), operations: [...operations] }
     await writeFileAtomic(join(this.dir, PENDING_DIR, `${id}.json`), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, dirMode: 0o700 })
     await this.audit({ time: new Date().toISOString(), origin, target, outcome: 'staged', operations, pendingId: id })
-    // Mirror to unified DB candidate queue (observability, S1)
-    try {
-      const db = await this.ensureUnifiedDb()
-      if (db !== null) {
-        const event = db.addEvent({ type: 'memory_write', target, payload: { operations, pendingId: id }, sessionId: null })
-        for (const op of operations) {
-          if (op.content !== undefined && op.content.trim() !== '') {
-            try { db.createCandidate({ eventId: event.id, target, content: op.content.trim(), provenance: origin }) } catch {}
+    // Mirror to unified DB candidate queue (observability, S1) — never block staging
+    void (async () => {
+      try {
+        const db = await this.ensureUnifiedDb()
+        if (db !== null) {
+          const event = db.addEvent({ type: 'memory_write', target, payload: { operations, pendingId: id }, sessionId: null })
+          for (const op of operations) {
+            if (op.content !== undefined && op.content.trim() !== '') {
+              try { db.createCandidate({ eventId: event.id, target, content: op.content.trim(), provenance: origin }) } catch {}
+            }
           }
         }
-      }
-    } catch {}
+      } catch {}
+    })()
     return id
   }
 
