@@ -1,21 +1,19 @@
 /**
- * Compatibility-mode left extended panel: the SAME ExtendedPanel surface the
- * advanced root hosts inside its `panel.extended` column, shown by default in
- * the plain upstream shell (no mode switch required).
+ * Compatibility-mode extended workspace host.
  *
- * The compatibility shell has no desktop root frame — ui-layout's AppFrame
- * occupies `root` and only declares `sidebar | conversation | details |
- * shell.overlay`. So instead of owning a grid column, the panel registers into
- * `shell.overlay` (the additive, click-through layer the frame always mounts)
- * and renders as a fixed-position left dock. The dock is `position: fixed` on
- * the VIEWPORT, so it ignores the app's own box; the app is shifted right by
- * the dock width through a `#root` margin-left owned by this effect. The
- * upstream frame's ResizeObserver then re-solves its columns against the
- * narrower box, giving the same [extended | sidebar | conversation | details]
- * reading order as advanced mode without touching AppFrame.
+ * The ExtendedPanel itself owns the full-page workspace (fixed overlay when
+ * expanded, compact rail when collapsed). This module only supplies the
+ * open/close state persisted in localStorage, keeps the upstream AppFrame
+ * clear of the collapsed rail with a small `#root` margin, and registers the
+ * panel into the additive `shell.overlay` layer the upstream frame always
+ * mounts.
+ *
+ * Advanced mode keeps `panel.extended` untouched: this module only runs when
+ * `parseDesktopClientEnvironment` reports `compatibility`, so the two
+ * registrations can never double-mount the panel in one window.
  */
 
-import { createElement as h, useCallback, useEffect, useMemo, useState } from 'react'
+import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type { DesktopClientEnvironment } from './environment.ts'
@@ -23,11 +21,9 @@ import type {} from './contracts.ts'
 import { installCompatibilityStyles } from './styles.ts'
 import { EXTENDED_NS } from './extended-locales.ts'
 import { ExtendedPanel, type ExtendedLayoutControl, type ExtendedTranslate } from './extended-panel.tsx'
+import { mountOfficeDeskTheme } from './office-desk-theme.ts'
 
-/** localStorage key remembering the user's collapse choice (default = wide). */
-const COMPAT_EXTENDED_PREF = 'dsh-desktop.compat-extended'
 const EXTENDED_COLLAPSED = 56
-const EXTENDED_DEFAULT = 300
 
 /** Business face delivered to the compatibility dock registration. */
 export interface CompatibilityExtendedInjected {
@@ -40,66 +36,47 @@ export interface CompatibilityExtendedInjected {
 
 export type CompatibilityExtendedProps = PropsRuntime<'shell.overlay'> & CompatibilityExtendedInjected
 
-function dockStyle(width: number): React.CSSProperties {
-  return {
-    position: 'fixed',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width,
-    zIndex: 1000,
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  }
-}
-
 /**
- * Fixed left dock hosting the shared ExtendedPanel. The dock owns its own
- * collapsed/width state (persisted in localStorage) and mirrors the rendered
- * width into a `#root` margin so the upstream AppFrame never sits underneath it.
+ * Hosts the user-authored Office Desk theme in a full-screen `srcdoc`
+ * iframe (theme file untouched) with all Desktop features wired through the
+ * bridge adapter. If theme mounting ever throws, the shared ExtendedPanel
+ * remains the fallback so the workspace can never be blank.
  */
 export function CompatibilityExtendedDock(props: CompatibilityExtendedProps): React.ReactNode {
   const { t, openSession, useSessions } = props
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(COMPAT_EXTENDED_PREF) === 'rail'
-    } catch {
-      return false
-    }
-  })
-  const width = collapsed ? EXTENDED_COLLAPSED : EXTENDED_DEFAULT
-  const toggle = useCallback(() => {
-    setCollapsed(prev => {
-      const next = !prev
-      try {
-        localStorage.setItem(COMPAT_EXTENDED_PREF, next ? 'rail' : 'wide')
-      } catch {
-        // Persistence is best-effort; the in-memory state still applies.
-      }
-      return next
-    })
-  }, [])
-  const open = useCallback(() => setCollapsed(false), [])
-  const layout = useMemo(() => ({ toggleExtended: toggle, openExtended: open }), [toggle, open])
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [fallback, setFallback] = useState(false)
 
-  // Shift the whole app right by the dock width. `position: fixed` docks are
-  // viewport-anchored, so the margin only moves the frame content; the
-  // cleanup restores the plain upstream layout when the fiber unloads.
   useEffect(() => {
-    const root = document.getElementById('root')
-    if (root === null) return
-    root.style.marginLeft = `${width}px`
-    return () => { root.style.marginLeft = '' }
-  }, [width])
+    if (fallback) return
+    const container = containerRef.current
+    if (container === null) return
+    let dispose: (() => void) | undefined
+    try {
+      dispose = mountOfficeDeskTheme(container, {
+        mode: document.body.dataset.dshDesktopMode ?? 'compatibility',
+        platform: document.body.dataset.dshDesktopPlatform ?? 'win32',
+      })
+    } catch {
+      setFallback(true)
+      return
+    }
+    return () => dispose?.()
+  }, [fallback])
 
-  return h('div', { className: 'dshDesktopCompatDock', style: dockStyle(width) },
-    h(ExtendedPanel, { t, layout, openSession, collapsed, width, useSessions }),
-  )
+  if (fallback) {
+    const layout: ExtendedLayoutControl = { toggleExtended: () => undefined, openExtended: () => undefined }
+    return h(ExtendedPanel, { t, layout, openSession, collapsed: false, width: EXTENDED_COLLAPSED, useSessions })
+  }
+
+  return h('div', {
+    ref: containerRef,
+    style: { position: 'fixed', inset: 0, zIndex: 1000 },
+  })
 }
 
 /**
- * Register the compatibility extended dock for one plugin-fiber lifetime.
+ * Register the compatibility extended workspace for one plugin-fiber lifetime.
  * @param ctx - active browser Cordis context.
  * @param environment - validated mode and platform marker (mode === 'compatibility').
  */
