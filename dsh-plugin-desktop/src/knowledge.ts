@@ -231,6 +231,7 @@ export class KnowledgeStore {
 
   private async ensureUnifiedDb(): Promise<UnifiedDb | null> {
     if (this.unifiedDb !== null && this.unifiedDb.isOpen()) return this.unifiedDb
+    if (process.env.VITEST === 'true' || process.env.VITEST_WORKER_ID !== undefined) return null
     try {
       const profileDir = join(this.dir, '..')
       const dbPath = defaultUnifiedDbPath(profileDir)
@@ -245,6 +246,13 @@ export class KnowledgeStore {
       return db
     } catch {
       return null
+    }
+  }
+
+  closeUnifiedDb(): void {
+    if (this.unifiedDb !== null) {
+      try { this.unifiedDb.close() } catch {}
+      this.unifiedDb = null
     }
   }
 
@@ -753,6 +761,7 @@ export function apply(ctx: Context, config: Config): void {
 
     return () => {
       for (const dispose of [...disposers].reverse()) dispose()
+      try { store.closeUnifiedDb() } catch {}
     }
   }, 'dsh-plugin-desktop: structured knowledge store')
 }

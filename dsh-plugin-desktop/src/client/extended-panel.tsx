@@ -21,6 +21,11 @@ import {
   deleteKnowledgeCard, fetchKnowledgeState, relativeTime,
 } from './knowledge-client.ts'
 import type { KnowledgeCardView } from './knowledge-client.ts'
+import {
+  fetchStoreStats, fetchCandidates, approveCandidate, rejectCandidate,
+  fetchGraph, fetchKnowledgePages, searchDocuments,
+} from './store-client.ts'
+import type { StoreStatsView, CandidateView, GraphView, KnowledgePageView } from './store-client.ts'
 import type { SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 
 export interface ExtendedTranslate {
@@ -49,7 +54,7 @@ export interface ExtendedPanelProps extends ExtendedPanelInjected {
   useSessions: ExtendedPanelUseSessions
 }
 
-type PageId = 'today' | 'knowledge' | 'experts' | 'graph' | 'news' | 'health' | 'reader' | 'expert'
+type PageId = 'today' | 'knowledge' | 'experts' | 'graph' | 'news' | 'health' | 'reader' | 'expert' | 'store'
 
 interface NavItem {
   id: PageId
@@ -70,6 +75,7 @@ const navItems: NavItem[] = [
   { id: 'health', icon: '🩺', label: '健康中心' },
   { id: 'reader', icon: '📖', label: '阅读器' },
   { id: 'expert', icon: '🎯', label: '专家风格' },
+  { id: 'store', icon: 'DB', label: '统一存储' },
 ]
 
 const workspace: React.CSSProperties = {
@@ -989,6 +995,129 @@ function ExpertStylePage(props: { t: ExtendedTranslate }): React.ReactNode {
   )
 }
 
+
+// ────────────────────────── 统一存储 (S2/S3) ──────────────────────────
+
+function StorePage(): React.ReactNode {
+  const [stats, setStats] = useState<StoreStatsView | null>(null)
+  const [candidates, setCandidates] = useState<CandidateView[] | null>(null)
+  const [pages, setPages] = useState<KnowledgePageView[] | null>(null)
+  const [graph, setGraph] = useState<GraphView | null>(null)
+  const [docQuery, setDocQuery] = useState('')
+  const [docResults, setDocResults] = useState<Array<{ content: string, path: string }> | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const refresh = async (): Promise<void> => {
+    const [s, c, p, g] = await Promise.all([
+      fetchStoreStats(),
+      fetchCandidates(),
+      fetchKnowledgePages(),
+      fetchGraph(),
+    ])
+    if (s !== null) setStats(s)
+    if (c !== null) setCandidates(c)
+    if (p !== null) setPages(p.pages)
+    if (g !== null) setGraph(g)
+  }
+
+  useEffect(() => {
+    void refresh()
+    const id = setInterval(() => { void refresh() }, 8000)
+    return () => clearInterval(id)
+  }, [])
+
+  const act = async (id: string, kind: 'approve' | 'reject'): Promise<void> => {
+    setBusy(id)
+    setMsg(null)
+    const result = kind === 'approve' ? await approveCandidate(id) : await rejectCandidate(id)
+    setBusy(null)
+    if (result.ok) {
+      setMsg(kind === 'approve' ? '已批准，已同步到 MEMORY.md' : '已拒绝')
+      void refresh()
+    } else {
+      setMsg(result.error ?? '操作失败')
+    }
+  }
+
+  const searchDoc = async (): Promise<void> => {
+    if (docQuery.trim() === '') return
+    const res = await searchDocuments(docQuery.trim(), 8)
+    if (res !== null && Array.isArray((res as { chunks?: unknown }).chunks)) {
+      setDocResults((res as { chunks: Array<{ content: string, path: string }> }).chunks)
+    } else {
+      setDocResults([])
+    }
+  }
+
+  return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+    msg !== null ? h('div', { style: { padding: '8px 12px', borderRadius: 8, background: 'var(--dsh-color-accent, rgba(76,139,245,0.12))', fontSize: 12 } }, msg) : null,
+    h('section', {},
+      h('h3', { style: { fontSize: 13, fontWeight: 800, margin: '0 0 8px' } }, '存储概览（SQLite 统一事实层）'),
+      stats === null
+        ? h('span', { style: muted }, '加载中…')
+        : h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 } },
+            h('div', { style: bigCard }, h('div', { style: { fontSize: 11, color: '#888' } }, 'Facts'), h('div', { style: { fontSize: 20, fontWeight: 800 } }, String(stats.facts))),
+            h('div', { style: bigCard }, h('div', { style: { fontSize: 11, color: '#888' } }, 'Cards'), h('div', { style: { fontSize: 20, fontWeight: 800 } }, String(stats.cards))),
+            h('div', { style: bigCard }, h('div', { style: { fontSize: 11, color: '#888' } }, 'Chunks'), h('div', { style: { fontSize: 20, fontWeight: 800 } }, String(stats.chunks))),
+            h('div', { style: bigCard }, h('div', { style: { fontSize: 11, color: '#888' } }, 'Pending'), h('div', { style: { fontSize: 20, fontWeight: 800, color: stats.pending > 0 ? '#d93025' : undefined } }, String(stats.pending))),
+          ),
+    ),
+    h('section', {},
+      h('h3', { style: { fontSize: 13, fontWeight: 800, margin: '0 0 8px' } }, `待审队列（${String(candidates?.length ?? 0)}） — 模型只产候选，批准后落事实`),
+      candidates === null
+        ? h('span', { style: muted }, '加载中…')
+        : candidates.length === 0
+          ? h('span', { style: muted }, '暂无待审，候选队列为空')
+          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+              ...candidates.slice(0, 10).map(c => h('div', { key: c.id, style: { ...bigCard, cursor: 'default' } },
+                h('div', { style: { fontSize: 12, fontWeight: 700, wordBreak: 'break-all' } }, c.content),
+                h('div', { style: { fontSize: 11, color: '#888' } }, `${c.target} · ${c.id.slice(0, 8)} · ${relativeTime(Date.now(), c.createdAt)}前`),
+                h('div', { style: { display: 'flex', gap: 8, marginTop: 6 } },
+                  h('button', { type: 'button', disabled: busy === c.id, style: { padding: '4px 10px', borderRadius: 6, border: '1px solid #4c8bf5', background: '#4c8bf5', color: '#fff', cursor: 'pointer', fontSize: 12 }, onClick: () => { void act(c.id, 'approve') } }, busy === c.id ? '…' : '批准'),
+                  h('button', { type: 'button', disabled: busy === c.id, style: { padding: '4px 10px', borderRadius: 6, border: '1px solid #888', background: 'transparent', cursor: 'pointer', fontSize: 12 }, onClick: () => { void act(c.id, 'reject') } }, '拒绝'),
+                ),
+              )),
+            ),
+    ),
+    h('section', {},
+      h('h3', { style: { fontSize: 13, fontWeight: 800, margin: '0 0 8px' } }, '知识页（由 facts 聚合的可重建投影）'),
+      pages === null
+        ? h('span', { style: muted }, '加载中…')
+        : pages.length === 0
+          ? h('span', { style: muted }, '暂无知识页，完成一次 /distill 或知识卡沉淀后自动生成')
+          : h('div', { style: grid },
+              ...pages.slice(0, 8).map(p => h('div', { key: p.id, style: bigCard },
+                h('div', { style: { fontSize: 13, fontWeight: 700 } }, p.title),
+                h('div', { style: { fontSize: 11, color: '#888' } }, `卡片 ${String(p.cardIds.length)} · 标签 ${p.tags.join(', ') || '—'}`),
+              )),
+            ),
+    ),
+    h('section', {},
+      h('h3', { style: { fontSize: 13, fontWeight: 800, margin: '0 0 8px' } }, '文档邻域检索（混合 FTS5 + CJK bigram）'),
+      h('div', { style: { display: 'flex', gap: 8, marginBottom: 8 } },
+        h('input', { type: 'text', value: docQuery, placeholder: '输入关键词，检索文档块与知识卡', style: { flex: '1 1 auto', padding: '6px 10px', borderRadius: 8, border: '1px solid #888', fontSize: 12 }, onInput: (e: unknown) => { const v = (e as { currentTarget: { value: string } }).currentTarget.value; setDocQuery(v) }, onKeyDown: (e: unknown) => { const ke = e as { key: string }; if (ke.key === 'Enter') void searchDoc() } }),
+        h('button', { type: 'button', style: { padding: '6px 12px', borderRadius: 8, border: '1px solid #4c8bf5', background: '#4c8bf5', color: '#fff', cursor: 'pointer', fontSize: 12 }, onClick: () => { void searchDoc() } }, '检索'),
+      ),
+      docResults === null ? null
+        : docResults.length === 0 ? h('span', { style: muted }, '无命中，试试更短的关键词或 CJK 双字')
+        : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+            ...docResults.map((r, i) => h('div', { key: String(i), style: bigCard },
+              h('div', { style: { fontSize: 12, fontWeight: 600, color: '#888' } }, r.path),
+              h('div', { style: { fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, r.content.slice(0, 300)),
+            )),
+          ),
+    ),
+    graph !== null && graph.edges.length > 0
+      ? h('section', {},
+          h('h3', { style: { fontSize: 13, fontWeight: 800, margin: '0 0 8px' } }, `关系图（${String(graph.edges.length)} 条边，共享标签权重）`),
+          h('div', { style: { fontSize: 11, color: '#888' } }, graph.edges.slice(0, 12).map(e => `${e.sourceId.slice(0,4)}→${e.targetId.slice(0,4)}(${e.type}:${String(e.weight)})`).join('  ')),
+        )
+      : null,
+  )
+}
+
+
 /**
  * The boujoy-fused full-page workspace. Collapsed it renders the compact
  * rail; expanded it renders the slim nav (220px) plus the active page.
@@ -1061,7 +1190,9 @@ export function ExtendedPanel(props: ExtendedPanelProps): React.ReactNode {
                     ? h(HealthPage, {})
                     : active === 'reader'
                       ? h(ReaderPage, { t })
-                      : h(ExpertStylePage, { t }),
+                      : active === 'store'
+                        ? h(StorePage, {})
+                        : h(ExpertStylePage, { t }),
       ),
     ),
   )

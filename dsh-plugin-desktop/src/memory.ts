@@ -16,6 +16,7 @@ import { autoKnowledgeFromMemory, KnowledgeStore } from './knowledge.ts'
 import type { Config as KnowledgeConfig } from './knowledge.ts'
 import { UnifiedDb, defaultUnifiedDbPath } from './store/unified-db.ts'
 import { migrateFromFiles } from './store/migrate.ts'
+import { mountStoreRoutes } from './store/store-routes.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'desktop-memory'
@@ -237,6 +238,7 @@ export class MemoryStore {
   /** Lazily open the unified SQLite layer (shared DB at profile root). Never throws. */
   private async ensureUnifiedDb(): Promise<UnifiedDb | null> {
     if (this.unifiedDb !== null && this.unifiedDb.isOpen()) return this.unifiedDb
+    if (process.env.VITEST === 'true' || process.env.VITEST_WORKER_ID !== undefined) return null
     try {
       const profileDir = join(this.dir, '..')
       const dbPath = defaultUnifiedDbPath(profileDir)
@@ -252,6 +254,14 @@ export class MemoryStore {
       return db
     } catch {
       return null
+    }
+  }
+
+  /** Close the unified layer if it was opened (tests + Cordis dispose). */
+  closeUnifiedDb(): void {
+    if (this.unifiedDb !== null) {
+      try { this.unifiedDb.close() } catch {}
+      this.unifiedDb = null
     }
   }
 
@@ -949,6 +959,11 @@ export function apply(ctx: Context, config: Config): void {
         effect(callback: () => () => void, label: string): void
       }
       host.effect(() => mountMemoryRoutes(host, store, reviewer, config), 'dsh-plugin-desktop: memory http routes')
+      try {
+        host.effect(() => mountStoreRoutes(host as unknown as never, ctx.desktopProfiles.current.dir), 'dsh-plugin-desktop: unified store routes')
+      } catch (error) {
+        ctx.logger.warn('dsh-plugin-desktop: could not mount unified store routes: %s', String(error))
+      }
     })
   }
 
@@ -1057,6 +1072,10 @@ export function apply(ctx: Context, config: Config): void {
 
     return () => {
       for (const dispose of [...disposers].reverse()) dispose()
+      try { store.closeUnifiedDb() } catch {}
+      if (knowledgeStore !== null) {
+        try { (knowledgeStore as unknown as { closeUnifiedDb?: () => void }).closeUnifiedDb?.() } catch {}
+      }
     }
   }, 'dsh-plugin-desktop: bounded cross-session memory')
 }
