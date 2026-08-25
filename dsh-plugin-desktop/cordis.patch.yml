@@ -57,3 +57,23 @@
     printUrl: false
     surfaceContext: true
     trustedHosts: []
+
+# High-churn domain routing: the session projection cache rewrites its WHOLE
+# medium on every forced checkpoint (turn/end, session disposal, cold-read
+# write-back). On the pretty-printed JSON backend a large history turns each
+# of those into a multi-second synchronous JSON.stringify + full-file replace
+# on the Host event loop, freezing IPC and making every renderer page hang.
+# The SQLite backend updates one row per write, which is exactly why it exists
+# (see @deepseek-ai/dsh-storage-sqlite README). All other domains stay on the
+# default json backend; an empty SQLite medium cold-rebuilds from session logs
+# via the documented write-back self-heal.
+- insert:
+    - id: storage-sqlite
+      name: '@deepseek-ai/dsh-storage-sqlite'
+      config:
+        path: !!js dshHomePath('storages/domain-sqlite.db')
+- id: storage-domain
+  config:
+    backend: json
+    routes:
+      session_projcache: sqlite

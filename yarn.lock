@@ -3447,6 +3447,19 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@deepseek-ai/dsh-storage-sqlite@npm:0.1.1-rc.2":
+  version: 0.1.1-rc.2
+  resolution: "@deepseek-ai/dsh-storage-sqlite@npm:0.1.1-rc.2"
+  dependencies:
+    "@deepseek-ai/schemastery": "npm:^3.18.1"
+  peerDependencies:
+    "@deepseek-ai/cordis": ^4.0.1
+    "@deepseek-ai/dsh-invariants": ^0.1.1-rc.2
+    "@deepseek-ai/dsh-storage": ^0.1.1-rc.2
+  checksum: 10c0/5626ac1fda930cfe6a15943b7b953dc93f61a4a4dafaf51931175dc6700bb4bc38103d17399c38765a0dd2863e0bf69e2624cc8e3c1cb9ab4b2418890e8b8db5
+  languageName: node
+  linkType: hard
+
 "@deepseek-ai/dsh-storage@npm:0.1.1-rc.2, @deepseek-ai/dsh-storage@npm:^0.1.1-rc.2":
   version: 0.1.1-rc.2
   resolution: "@deepseek-ai/dsh-storage@npm:0.1.1-rc.2"
@@ -8299,6 +8312,7 @@ __metadata:
     "@deepseek-ai/dsh-spill": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-storage": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-storage-domain": "npm:0.1.1-rc.2"
+    "@deepseek-ai/dsh-storage-sqlite": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-subagent": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-subagent-in-process-driver": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-subprocess": "npm:0.1.1-rc.2"
