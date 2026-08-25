@@ -34,6 +34,8 @@ export function compatibilityWindowOptions(
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      // Enables the <webview> guest used by desktop plugins' embedded browser.
+      webviewTag: true,
     },
   }
   if (platform === 'win32') options.autoHideMenuBar = true
@@ -70,6 +72,8 @@ export function advancedWindowOptions(
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      // Enables the <webview> guest used by desktop plugins' embedded browser.
+      webviewTag: true,
     },
   }
   if (platform === 'darwin') {
