@@ -92,7 +92,7 @@ export async function migrateFromFiles(profileDir: string, db: UnifiedDb): Promi
         if (title === '' || summary === '') { skippedCards++; continue }
         const id = typeof card.id === 'string' && card.id !== '' ? card.id : undefined
         const createdAt = typeof card.createdAt === 'string' ? card.createdAt : undefined
-        void card.updatedAt; // preserve timestamp (audit provenance) 
+        void card.updatedAt; // preserve timestamp (audit provenance)
         // migrated card timestamps preserved via audit, not exact replay
         try {
           const exists = db.listKnowledgeCards().some(c => c.title.toLocaleLowerCase() === title.toLocaleLowerCase())
