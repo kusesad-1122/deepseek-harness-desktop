@@ -1,3 +1,3 @@
 [submodule "deepseek-harness"]
 	path = deepseek-harness
-	url = https://github.com/kusesad-1122/deepseek-harness.git
+	url = https://github.com/deepseek-ai/deepseek-harness.git
