@@ -1,6 +1,6 @@
 {
-  "repository": "https://github.com/deepseek-ai/deepseek-harness.git",
-  "commit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
-  "sourceVersion": "0.1.1-rc.2",
-  "runtimePackageVersion": "0.1.1-rc.2"
+    "sourceVersion":  "0.1.1-rc.2",
+    "runtimePackageVersion":  "0.1.1-rc.2",
+    "commit":  "98fe3c1a88cc1a6337be536440c541f70d22ce36",
+    "repository":  "https://github.com/kusesad-1122/deepseek-harness.git"
 }
