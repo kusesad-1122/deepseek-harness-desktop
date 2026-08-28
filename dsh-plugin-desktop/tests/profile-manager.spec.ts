@@ -138,14 +138,10 @@ describe('desktop profile discovery', () => {
     ])
     if (linked) expect(profiles.some(profile => profile.name === 'linked-work')).toBe(false)
     expect(readFileSync(join(webDir, 'package.json'), 'utf8')).toBe(before)
-    expect(readdirSync(join(home, 'profiles')).sort()).toEqual([
-      'broken',
-      'embedded-desktop',
-      'headless',
-      'node_modules',
-      'work',
-      'wrong-order',
-    ])
+    const profileDirNames = readdirSync(join(home, 'profiles')).sort()
+    const expectedProfileDirs = ['broken', 'embedded-desktop', 'headless', 'node_modules', 'work', 'wrong-order']
+    if (linked) expectedProfileDirs.push('linked-work')
+    expect(profileDirNames).toEqual(expectedProfileDirs.sort())
   })
 
   it('treats an existing repairable desktop profile as managed but rejects malformed metadata', () => {
